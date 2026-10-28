@@ -21,6 +21,8 @@ option(WITH_AVX2 "Enable AVX2 optimizations" ON)
 add_library(inference_engine STATIC
     src/core/tensor.cpp
     src/core/device.cpp
+    src/gguf/gguf_parser.cpp
+    src/gguf/quantization.cpp
 )
 
 target_include_directories(inference_engine PUBLIC
