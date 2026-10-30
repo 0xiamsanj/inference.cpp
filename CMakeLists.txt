@@ -23,6 +23,12 @@ add_library(inference_engine STATIC
     src/core/device.cpp
     src/gguf/gguf_parser.cpp
     src/gguf/quantization.cpp
+    src/ops/ops.cpp
+    src/ops/attention.cpp
+    src/ops/normalization.cpp
+    src/models/transformer.cpp
+    src/models/model.cpp
+    src/models/kv_cache.cpp
 )
 
 target_include_directories(inference_engine PUBLIC
