@@ -29,6 +29,8 @@ add_library(inference_engine STATIC
     src/models/transformer.cpp
     src/models/model.cpp
     src/models/kv_cache.cpp
+    src/sampling/sampler.cpp
+    src/tokenizer/tokenizer.cpp
 )
 
 target_include_directories(inference_engine PUBLIC
