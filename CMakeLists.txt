@@ -5,20 +5,40 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Compiler warnings
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wpedantic -Werror")
 endif()
 
+# Build types
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
+# Find packages
 find_package(Threads REQUIRED)
-find_package(spdlog CONFIG REQUIRED)
 
+# Optional: CUDA backend.
+# We do not require the CUDA toolkit: kernels are compiled to PTX with clang,
+# then JIT-compiled by the installed NVIDIA driver at runtime (libcuda.so.1).
 option(WITH_CUDA "Enable CUDA backend (clang PTX + driver JIT)" ON)
+
+# Optional: SIMD
 option(WITH_AVX2 "Enable AVX2 optimizations" ON)
 
+# Dependency: spdlog (header-only logging)
+find_package(spdlog CONFIG REQUIRED)
+
+# Dependency: googletest
+include(FetchContent)
+FetchContent_Declare(
+    googletest
+    GIT_REPOSITORY https://github.com/google/googletest.git
+    GIT_TAG v1.14.0
+)
+FetchContent_MakeAvailable(googletest)
+
+# Main library
 add_library(inference_engine STATIC
     src/core/tensor.cpp
     src/core/device.cpp
@@ -93,11 +113,17 @@ if(WITH_AVX2)
     target_compile_options(inference_engine PUBLIC $<$<CXX_COMPILER_ID:GNU,Clang>:-mavx2 -mfma>)
 endif()
 
+# Executable
 add_executable(inference_cli
     src/main.cpp
 )
 target_link_libraries(inference_cli PRIVATE inference_engine)
 
+# Tests
+enable_testing()
+add_subdirectory(tests)
+
+# Install
 install(TARGETS inference_engine
     ARCHIVE DESTINATION lib
     LIBRARY DESTINATION lib
@@ -105,3 +131,6 @@ install(TARGETS inference_engine
 )
 install(DIRECTORY include/ DESTINATION include)
 install(TARGETS inference_cli RUNTIME DESTINATION bin)
+# Diagnostic tool
+add_executable(debug_logits tools/debug_logits.cpp)
+target_link_libraries(debug_logits PRIVATE inference_engine)
