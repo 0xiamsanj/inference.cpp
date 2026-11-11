@@ -428,6 +428,93 @@ TEST(CudaTest, GemvInt16) {
     release(W); release(sc); release(x); release(y);
 }
 
+TEST(CudaTest, GemmInt16Batch) {
+    if (!inference::cuda::available()) GTEST_SKIP() << "no CUDA device";
+    using namespace inference::cuda;
+
+    // W_eff = [[1,2],[3,4]] as q=[[1,2],[6,8]] with scales [1, 0.5]
+    // X = [[1,0],[0,1]]  ->  Y = [[1,3],[2,4]]
+    int16_t q[4] = {1, 2, 6, 8};
+    float scales[2] = {1.0f, 0.5f};
+    float xv[4] = {1, 0, 0, 1};
+
+    Buffer W = alloc(4 * sizeof(int16_t));
+    Buffer sc = alloc(2 * sizeof(float));
+    Buffer X = alloc(4 * sizeof(float));
+    Buffer Y = alloc(4 * sizeof(float));
+    upload(W, q, sizeof(q));
+    upload(sc, scales, sizeof(scales));
+    upload(X, xv, sizeof(xv));
+
+    gemm_i16(W, sc, X, Y, /*T=*/2, /*M=*/2, /*K=*/2);
+    inference::cuda::sync();
+
+    float out[4] = {0, 0, 0, 0};
+    download(out, Y, sizeof(out));
+    EXPECT_FLOAT_EQ(out[0], 1.0f);
+    EXPECT_FLOAT_EQ(out[1], 3.0f);
+    EXPECT_FLOAT_EQ(out[2], 2.0f);
+    EXPECT_FLOAT_EQ(out[3], 4.0f);
+
+    release(W); release(sc); release(X); release(Y);
+}
+
+TEST(CudaTest, AttentionBatch) {
+    if (!inference::cuda::available()) GTEST_SKIP() << "no CUDA device";
+    using namespace inference::cuda;
+
+    const int H = 2, Hkv = 1, HD = 4, MAX = 8, T = 3;
+    const float scale = 1.0f / std::sqrt(static_cast<float>(HD));
+
+    std::vector<float> q(T * H * HD), kc(Hkv * MAX * HD), vc(Hkv * MAX * HD);
+    for (size_t i = 0; i < q.size(); ++i) q[i] = std::sin(0.11f * i);
+    for (size_t i = 0; i < kc.size(); ++i) kc[i] = std::cos(0.07f * i);
+    for (size_t i = 0; i < vc.size(); ++i) vc[i] = std::sin(0.03f * i) - 0.2f;
+
+    std::vector<float> ref(T * H * HD, 0.0f);
+    for (int t = 0; t < T; ++t) {
+        for (int h = 0; h < H; ++h) {
+            std::vector<float> scores(t + 1);
+            float mx = -1e30f;
+            for (int s = 0; s <= t; ++s) {
+                float dot = 0;
+                for (int d = 0; d < HD; ++d) {
+                    dot += q[(t * H + h) * HD + d] * kc[s * HD + d];
+                }
+                scores[s] = dot * scale;
+                mx = std::max(mx, scores[s]);
+            }
+            float sum = 0;
+            for (int s = 0; s <= t; ++s) { scores[s] = std::exp(scores[s] - mx); sum += scores[s]; }
+            for (int s = 0; s <= t; ++s) scores[s] /= sum;
+            for (int d = 0; d < HD; ++d) {
+                float acc = 0;
+                for (int s = 0; s <= t; ++s) acc += scores[s] * vc[s * HD + d];
+                ref[(t * H + h) * HD + d] = acc;
+            }
+        }
+    }
+
+    Buffer qb = alloc(q.size() * sizeof(float));
+    Buffer kb = alloc(kc.size() * sizeof(float));
+    Buffer vb = alloc(vc.size() * sizeof(float));
+    Buffer ob = alloc(ref.size() * sizeof(float));
+    upload(qb, q.data(), q.size() * sizeof(float));
+    upload(kb, kc.data(), kc.size() * sizeof(float));
+    upload(vb, vc.data(), vc.size() * sizeof(float));
+
+    attention_batch(qb, kb, vb, ob, H, Hkv, HD, MAX, /*start=*/0, T, scale);
+    inference::cuda::sync();
+
+    std::vector<float> out(ref.size(), 0.0f);
+    download(out.data(), ob, out.size() * sizeof(float));
+    for (size_t i = 0; i < out.size(); ++i) {
+        EXPECT_NEAR(out[i], ref[i], 2e-4f) << "index " << i;
+    }
+
+    release(qb); release(kb); release(vb); release(ob);
+}
+
 TEST(CudaTest, EmbeddingInt16) {
     if (!inference::cuda::available()) GTEST_SKIP() << "no CUDA device";
     using namespace inference::cuda;

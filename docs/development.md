@@ -359,11 +359,10 @@ In order:
    inside the kernel. This is the difference between "1.1B on a 4 GB card" and
    "2–3B on a 4 GB card".
 2. **Quantized host storage or mmap.** The FP32 host copy is the real RAM wall.
-3. **Batched prefill.** A real GEMM for the prompt instead of token-by-token.
-4. **CPU SIMD and threads.** 5–10× on the fallback path.
-5. **Arch generalization, biases, Qwen2.**
-6. **RoPE scaling.**
-7. **BERT embeddings** as a second task.
+3. **CPU SIMD and threads.** 5–10× on the fallback path.
+4. **Arch generalization, biases, Qwen2.**
+5. **RoPE scaling.**
+6. **BERT embeddings** as a second task.
 
 Every one of those should come with a test and a before/after number. That's the
 only way to know it actually helped.

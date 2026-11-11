@@ -62,7 +62,8 @@ That's it. The rest is details, and the details are where the fun is.
 - Only the Llama family. Qwen, Gemma, Phi, and friends need code changes.
 - Chat templates cover the common formats (Zephyr/TinyLlama, Llama-3, ChatML,
   Mistral, Gemma), but this is not a general Jinja interpreter.
-- No batching. The GPU processes prompts one token at a time.
+- No multi-sequence batching. Prompt prefill is batched on the GPU, but decode
+  is still batch-size 1.
 - The CPU path is single-threaded and scalar.
 - Several GGUF quant formats are still unimplemented.
 

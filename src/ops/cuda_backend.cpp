@@ -138,9 +138,12 @@ void init_driver(Driver& d) {
     d.check(d.cuModuleLoadData(&mod, kCudaPtx), "cuModuleLoadData");
 
     const char* names[] = {
-        "gemv_kernel", "gemv_i16_kernel", "rmsnorm_kernel", "silu_kernel",
-        "mul_kernel", "add_kernel", "embedding_kernel", "embedding_i16_kernel",
-        "kv_write_kernel", "rope_kernel", "attention_kernel"
+        "gemv_kernel", "gemv_i16_kernel", "gemm_kernel", "gemm_i16_kernel",
+        "rmsnorm_kernel", "silu_kernel", "mul_kernel", "add_kernel",
+        "embedding_kernel", "embedding_i16_kernel",
+        "embedding_batch_kernel", "embedding_batch_i16_kernel",
+        "kv_write_kernel", "kv_write_batch_kernel", "rope_kernel",
+        "rope_batch_kernel", "attention_kernel", "attention_batch_kernel"
     };
     for (const char* n : names) {
         CUfunction fn = nullptr;
@@ -170,13 +173,19 @@ CUfunction kernel(Driver& d, const char* name) {
     return it->second;
 }
 
+void launch3(Driver& d, const char* name,
+             unsigned gx, unsigned gy, unsigned gz,
+             unsigned bx, unsigned shared_bytes, void** args) {
+    make_current(d);
+    d.check(d.cuLaunchKernel(kernel(d, name), gx, gy, gz, bx, 1, 1,
+                             shared_bytes, nullptr, args, nullptr),
+            name);
+}
+
 void launch(Driver& d, const char* name,
             unsigned gx, unsigned bx, unsigned shared_bytes,
             void** args) {
-    make_current(d);
-    d.check(d.cuLaunchKernel(kernel(d, name), gx, 1, 1, bx, 1, 1,
-                             shared_bytes, nullptr, args, nullptr),
-            name);
+    launch3(d, name, gx, 1, 1, bx, shared_bytes, args);
 }
 
 CUdeviceptr ptr_of(const Buffer& b) {
@@ -267,6 +276,26 @@ void gemv_i16(const Buffer& W, const Buffer& row_scale, const Buffer& x,
     launch(d, "gemv_i16_kernel", (unsigned)M, 256, 0, args);
 }
 
+void gemm(const Buffer& W, const Buffer& X, const Buffer& Y, int T, int M, int K) {
+    auto& d = drv();
+    CUdeviceptr wp = ptr_of(W), xp = ptr_of(X), yp = ptr_of(Y);
+    void* args[] = {&wp, &xp, &yp, &T, &M, &K};
+    launch3(d, "gemm_kernel",
+            (unsigned)((M + 15) / 16), (unsigned)((T + 31) / 32), 1,
+            512, 0, args);
+}
+
+void gemm_i16(const Buffer& W, const Buffer& row_scale, const Buffer& X,
+              const Buffer& Y, int T, int M, int K) {
+    auto& d = drv();
+    CUdeviceptr wp = ptr_of(W), sp = ptr_of(row_scale);
+    CUdeviceptr xp = ptr_of(X), yp = ptr_of(Y);
+    void* args[] = {&wp, &sp, &xp, &yp, &T, &M, &K};
+    launch3(d, "gemm_i16_kernel",
+            (unsigned)((M + 15) / 16), (unsigned)((T + 31) / 32), 1,
+            512, 0, args);
+}
+
 void rmsnorm(const Buffer& x, const Buffer& w, const Buffer& out,
              int rows, int dim, float eps) {
     auto& d = drv();
@@ -314,6 +343,23 @@ void embedding_i16(const Buffer& table, const Buffer& row_scale, int id,
     launch(d, "embedding_i16_kernel", 1, 256, 0, args);
 }
 
+void embedding_batch(const Buffer& table, const Buffer& ids, const Buffer& out,
+                     int T, int dim) {
+    auto& d = drv();
+    CUdeviceptr tp = ptr_of(table), ip = ptr_of(ids), op = ptr_of(out);
+    void* args[] = {&tp, &ip, &op, &T, &dim};
+    launch(d, "embedding_batch_kernel", (unsigned)T, 256, 0, args);
+}
+
+void embedding_batch_i16(const Buffer& table, const Buffer& row_scale,
+                         const Buffer& ids, const Buffer& out, int T, int dim) {
+    auto& d = drv();
+    CUdeviceptr tp = ptr_of(table), sp = ptr_of(row_scale);
+    CUdeviceptr ip = ptr_of(ids), op = ptr_of(out);
+    void* args[] = {&tp, &sp, &ip, &op, &T, &dim};
+    launch(d, "embedding_batch_i16_kernel", (unsigned)T, 256, 0, args);
+}
+
 void kv_write(const Buffer& kc, const Buffer& vc, const Buffer& k, const Buffer& v,
               int n_heads, int head_dim, int max_seq, int pos) {
     auto& d = drv();
@@ -322,6 +368,16 @@ void kv_write(const Buffer& kc, const Buffer& vc, const Buffer& k, const Buffer&
     void* args[] = {&kcp, &vcp, &kp, &vp, &n_heads, &head_dim, &max_seq, &pos};
     unsigned blocks = (unsigned)((n_heads * head_dim + 255) / 256);
     launch(d, "kv_write_kernel", blocks, 256, 0, args);
+}
+
+void kv_write_batch(const Buffer& kc, const Buffer& vc, const Buffer& k, const Buffer& v,
+                    int n_heads, int head_dim, int max_seq, int start, int T) {
+    auto& d = drv();
+    CUdeviceptr kcp = ptr_of(kc), vcp = ptr_of(vc);
+    CUdeviceptr kp = ptr_of(k), vp = ptr_of(v);
+    void* args[] = {&kcp, &vcp, &kp, &vp, &n_heads, &head_dim, &max_seq, &start, &T};
+    unsigned blocks = (unsigned)((n_heads * head_dim + 255) / 256);
+    launch3(d, "kv_write_batch_kernel", blocks, (unsigned)T, 1, 256, 0, args);
 }
 
 void rope(const Buffer& q, const Buffer& k, const Buffer& table,
@@ -333,6 +389,15 @@ void rope(const Buffer& q, const Buffer& k, const Buffer& table,
            (unsigned)(head_dim / 2), 0, args);
 }
 
+void rope_batch(const Buffer& q, const Buffer& k, const Buffer& table,
+                int n_heads, int n_kv_heads, int head_dim, int start, int T) {
+    auto& d = drv();
+    CUdeviceptr qp = ptr_of(q), kp = ptr_of(k), tp = ptr_of(table);
+    void* args[] = {&qp, &kp, &tp, &n_heads, &n_kv_heads, &head_dim, &start, &T};
+    launch3(d, "rope_batch_kernel", (unsigned)(n_heads + n_kv_heads),
+            (unsigned)T, 1, (unsigned)(head_dim / 2), 0, args);
+}
+
 void attention(const Buffer& q, const Buffer& kc, const Buffer& vc, const Buffer& out,
                int n_heads, int n_kv_heads, int head_dim, int max_seq, int pos,
                float scale) {
@@ -342,6 +407,18 @@ void attention(const Buffer& q, const Buffer& kc, const Buffer& vc, const Buffer
                     &head_dim, &max_seq, &pos, &scale};
     unsigned shared = (unsigned)(pos + 1) * sizeof(float);
     launch(d, "attention_kernel", (unsigned)n_heads, 128, shared, args);
+}
+
+void attention_batch(const Buffer& q, const Buffer& kc, const Buffer& vc,
+                     const Buffer& out, int n_heads, int n_kv_heads, int head_dim,
+                     int max_seq, int start, int T, float scale) {
+    auto& d = drv();
+    CUdeviceptr qp = ptr_of(q), kcp = ptr_of(kc), vcp = ptr_of(vc), op = ptr_of(out);
+    void* args[] = {&qp, &kcp, &vcp, &op, &n_heads, &n_kv_heads,
+                    &head_dim, &max_seq, &start, &T, &scale};
+    unsigned shared = (unsigned)(start + T) * sizeof(float);
+    launch3(d, "attention_batch_kernel", (unsigned)n_heads, (unsigned)T, 1,
+            128, shared, args);
 }
 
 #else  // !WITH_CUDA
@@ -365,16 +442,24 @@ void upload(const Buffer&, const void*, size_t) { unavailable(); }
 void download(void*, const Buffer&, size_t) { unavailable(); }
 void gemv(const Buffer&, const Buffer&, const Buffer&, int, int) { unavailable(); }
 void gemv_i16(const Buffer&, const Buffer&, const Buffer&, const Buffer&, int, int) { unavailable(); }
+void gemm(const Buffer&, const Buffer&, const Buffer&, int, int, int) { unavailable(); }
+void gemm_i16(const Buffer&, const Buffer&, const Buffer&, const Buffer&, int, int, int) { unavailable(); }
 void rmsnorm(const Buffer&, const Buffer&, const Buffer&, int, int, float) { unavailable(); }
 void silu(const Buffer&, int) { unavailable(); }
 void mul(const Buffer&, const Buffer&, int) { unavailable(); }
 void add(const Buffer&, const Buffer&, int) { unavailable(); }
 void embedding(const Buffer&, int, const Buffer&, int) { unavailable(); }
 void embedding_i16(const Buffer&, const Buffer&, int, const Buffer&, int) { unavailable(); }
+void embedding_batch(const Buffer&, const Buffer&, const Buffer&, int, int) { unavailable(); }
+void embedding_batch_i16(const Buffer&, const Buffer&, const Buffer&, const Buffer&, int, int) { unavailable(); }
 void kv_write(const Buffer&, const Buffer&, const Buffer&, const Buffer&, int, int, int, int) { unavailable(); }
+void kv_write_batch(const Buffer&, const Buffer&, const Buffer&, const Buffer&, int, int, int, int, int) { unavailable(); }
 void rope(const Buffer&, const Buffer&, const Buffer&, int, int, int, int) { unavailable(); }
+void rope_batch(const Buffer&, const Buffer&, const Buffer&, int, int, int, int, int) { unavailable(); }
 void attention(const Buffer&, const Buffer&, const Buffer&, const Buffer&,
                int, int, int, int, int, float) { unavailable(); }
+void attention_batch(const Buffer&, const Buffer&, const Buffer&, const Buffer&,
+                     int, int, int, int, int, int, float) { unavailable(); }
 
 #endif
 

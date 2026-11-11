@@ -176,10 +176,10 @@ The formula I use when sizing it:
 
 For TinyLlama that's around 90 MB. Small compared to the weights.
 
-One thing that surprised me: the CPU prefill is not batched either. `forward()`
-takes a `[1, T]` input and loops over `T` inside each layer. It's simpler, and on
-a model this size the difference doesn't matter much. It does mean the CPU path
-is not the place to look for speed.
+One thing that surprised me: the CPU prefill is not batched. `forward()` takes a
+`[1, T]` input and loops over `T` inside each layer. It's simpler, and on a
+model this size the difference doesn't matter much. The GPU path now does batch
+it; see below.
 
 ## The GPU path, and why there's no CUDA toolkit
 
@@ -248,6 +248,13 @@ Greedy output is identical to the FP32 CPU path. If you want full precision back
 The scheme is not GGUF quantization. It's a runtime format. The original file
 stays on disk, the host keeps FP32, and the GPU gets INT16. That's a deliberate
 trade: simpler code, more host RAM.
+
+Prompt prefill is batched. Instead of running one token at a time, it processes
+the whole prompt through each layer with a tiled GEMM (32 tokens × 16 outputs per
+block, padded shared tiles to avoid bank conflicts), then computes logits for the
+last position only. On TinyLlama an 89-token prompt dropped from ~2.0 s to
+~0.7 s; short prompts improved from ~0.4 s to ~0.24 s. Decode still uses the
+single-token GEMV path.
 
 ## Where the memory goes
 
@@ -327,9 +334,8 @@ If you want more speed, the order I'd attack it in:
 
 1. Keep Q4_K/Q6_K blocks in VRAM and dequantize inside the matmul. That cuts
    TinyLlama from 2.2 GB to roughly 0.7 GB and makes 2–3B models possible.
-2. Batch the prompt prefill. Right now it's token-by-token even on the GPU.
-3. Make the CPU path blocked, SIMD, and threaded.
-4. Add real attention tiling for long contexts.
+2. Make the CPU path blocked, SIMD, and threaded.
+3. Batch the CPU prefill too, and add real attention tiling for long contexts.
 
 ## If you're going to change something
 

@@ -490,9 +490,8 @@ In order of payoff:
 1. **Quantized GPU matmul.** Keep Q4_K/Q6_K blocks in VRAM and dequantize inside
    the GEMV. This is what lets 2–3B models fit in 4 GB.
 2. **Quantized host storage or mmap.** The FP32 host copy is the real RAM wall.
-3. **Batched prefill.** A real GEMM for the prompt instead of per-token.
-4. **CPU SIMD, blocking, threads.** 5–10× on the fallback path.
-5. **Tiled attention** for long contexts.
+3. **CPU SIMD, blocking, threads.** 5–10× on the fallback path.
+4. **Tiled attention** for long contexts.
 
 Every one of these should come with a before/after number. If you can't measure
 it, you don't know if it helped.

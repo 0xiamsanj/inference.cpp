@@ -25,9 +25,10 @@ GPU:  ~29 tok/s, INT16 weights, ~2.2 GB VRAM
 - Does RMSNorm, RoPE, GQA, SwiGLU, KV caching, top-k/top-p sampling, and
   interactive generation.
 
-What it doesn't do: batching, other architecture families, several GGUF quant
-formats, or a general Jinja chat-template engine. It does recognize the common
-chat formats (Zephyr/TinyLlama, Llama-3, ChatML, Mistral, Gemma).
+What it doesn't do: multi-sequence batching, other architecture families, several
+GGUF quant formats, or a general Jinja chat-template engine. It does recognize
+the common chat formats (Zephyr/TinyLlama, Llama-3, ChatML, Mistral, Gemma), and
+GPU prompt prefill is batched.
 
 ## Docs
 
@@ -144,7 +145,7 @@ The CLI reports decode speed separately from the first GPU upload and prompt
 prefill, because the first run looks much worse than later ones:
 
 ```
-[32 tokens, 27.41 tok/s decode, GPU init 6717 ms, prefill 399 ms]
+[32 tokens, 27.41 tok/s decode, GPU init 6717 ms, prefill 240 ms]
 ```
 
 There's also a diagnostics tool. It prints weight statistics and the top logits
@@ -246,9 +247,8 @@ If you want more:
 
 1. Keep Q4_K/Q6_K blocks in VRAM and dequantize in the matmul. This is the big
    one.
-2. Batch the prompt prefill.
-3. SIMD + threads for the CPU path.
-4. Tiled attention for long contexts.
+2. SIMD + threads for the CPU path.
+3. Tiled attention for long contexts.
 
 ## Extending it
 

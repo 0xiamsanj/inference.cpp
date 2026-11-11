@@ -3,6 +3,7 @@
 #include "ops/ops.hpp"
 
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <chrono>
 #include <memory>
@@ -242,6 +243,109 @@ inline void linear(const Weight& w, const Buffer& x, const Buffer& y, int M, int
     else         cuda::gemv(w.data, x, y, M, N);
 }
 
+inline void linear_batch(const Weight& w, const Buffer& X, const Buffer& Y,
+                         int T, int M, int K) {
+    if (w.int16) cuda::gemm_i16(w.data, w.scale, X, Y, T, M, K);
+    else         cuda::gemm(w.data, X, Y, T, M, K);
+}
+
+// Frees prefill scratch buffers on scope exit.
+struct ScopedBuffers {
+    std::vector<Buffer> buffers;
+    ~ScopedBuffers() {
+        for (auto& b : buffers) {
+            if (b.valid()) cuda::release(b);
+        }
+    }
+    Buffer add_bytes(size_t bytes) {
+        Buffer b = cuda::alloc(bytes);
+        buffers.push_back(b);
+        return b;
+    }
+    Buffer add_floats(int64_t n) {
+        return add_bytes(static_cast<size_t>(n) * sizeof(float));
+    }
+};
+
+// Batched prompt prefill. Processes all prompt tokens through each layer with a
+// tiled GEMM, then computes logits for the last token only.
+void prefill(GpuState& s, const std::vector<int>& tokens, int start) {
+    const int T = static_cast<int>(tokens.size());
+    if (T <= 0) return;
+
+    const int D = s.D, H = s.H, Hkv = s.Hkv, HD = s.HD, F = s.FFN;
+
+    const size_t floats =
+        static_cast<size_t>(T) * (2 * D + 2 * H * HD + 2 * Hkv * HD + 2 * F) +
+        static_cast<size_t>(s.V) + static_cast<size_t>(T);
+    const size_t bytes = floats * sizeof(float);
+    const size_t free_b = cuda::free_memory();
+    if (bytes + (32ull << 20) > free_b) {
+        throw std::runtime_error(
+            "CUDA prefill: prompt needs ~" + std::to_string(bytes >> 20) +
+            " MB scratch but only " + std::to_string(free_b >> 20) +
+            " MB VRAM is free. Shorten the prompt or use the CPU backend.");
+    }
+
+    ScopedBuffers sb;
+    Buffer x = sb.add_floats(static_cast<int64_t>(T) * D);
+    Buffer xn = sb.add_floats(static_cast<int64_t>(T) * D);
+    Buffer q = sb.add_floats(static_cast<int64_t>(T) * H * HD);
+    Buffer k = sb.add_floats(static_cast<int64_t>(T) * Hkv * HD);
+    Buffer v = sb.add_floats(static_cast<int64_t>(T) * Hkv * HD);
+    Buffer attn = sb.add_floats(static_cast<int64_t>(T) * H * HD);
+    Buffer proj = sb.add_floats(static_cast<int64_t>(T) * D);
+    Buffer gate = sb.add_floats(static_cast<int64_t>(T) * F);
+    Buffer up = sb.add_floats(static_cast<int64_t>(T) * F);
+    Buffer ids = sb.add_bytes(static_cast<size_t>(T) * sizeof(int32_t));
+    Buffer last_xn = sb.add_floats(D);
+
+    std::vector<int32_t> host_ids(tokens.begin(), tokens.end());
+    cuda::upload(ids, host_ids.data(), host_ids.size() * sizeof(int32_t));
+
+    if (s.tok_emb.int16) {
+        cuda::embedding_batch_i16(s.tok_emb.data, s.tok_emb.scale, ids, x, T, D);
+    } else {
+        cuda::embedding_batch(s.tok_emb.data, ids, x, T, D);
+    }
+
+    const float scale = 1.0f / std::sqrt(static_cast<float>(HD));
+
+    for (size_t l = 0; l < s.layers.size(); ++l) {
+        const auto& L = s.layers[l];
+
+        cuda::rmsnorm(x, L.attn_norm, xn, T, D, s.eps);
+        linear_batch(L.wq, xn, q, T, H * HD, D);
+        linear_batch(L.wk, xn, k, T, Hkv * HD, D);
+        linear_batch(L.wv, xn, v, T, Hkv * HD, D);
+
+        cuda::rope_batch(q, k, s.rope_table, H, Hkv, HD, start, T);
+        cuda::kv_write_batch(s.kc[l], s.vc[l], k, v, Hkv, HD, s.MAXSEQ, start, T);
+        cuda::attention_batch(q, s.kc[l], s.vc[l], attn,
+                              H, Hkv, HD, s.MAXSEQ, start, T, scale);
+
+        linear_batch(L.wo, attn, proj, T, D, H * HD);
+        cuda::add(x, proj, T * D);
+
+        cuda::rmsnorm(x, L.ffn_norm, xn, T, D, s.eps);
+        linear_batch(L.w1, xn, gate, T, F, D);
+        cuda::silu(gate, T * F);
+        linear_batch(L.w3, xn, up, T, F, D);
+        cuda::mul(gate, up, T * F);
+        linear_batch(L.w2, gate, proj, T, D, F);
+        cuda::add(x, proj, T * D);
+    }
+
+    // Only the last prompt position is needed to start decoding.
+    Buffer last_x{x.ptr + static_cast<uint64_t>(T - 1) * D * sizeof(float),
+                  static_cast<size_t>(D) * sizeof(float)};
+    cuda::rmsnorm(last_x, s.out_norm, last_xn, 1, D, s.eps);
+    linear(s.out_w, last_xn, s.logits, s.V, D);
+    cuda::sync();
+    cuda::download(s.host_logits.data(), s.logits,
+                   static_cast<size_t>(s.V) * sizeof(float));
+}
+
 // Run one token through the network at absolute position `pos`. The resulting
 // logits are downloaded into s.host_logits.
 void forward_token(GpuState& s, int token, int pos) {
@@ -338,10 +442,8 @@ std::vector<int> generate_cuda(const Model& model,
 
     std::vector<int> generated = prompt_tokens;
 
-    // Prompt (also fills the KV cache)
-    for (size_t i = 0; i < prompt_tokens.size(); ++i) {
-        forward_token(s, prompt_tokens[i], static_cast<int>(i));
-    }
+    // Batched prompt prefill (also fills the KV cache).
+    prefill(s, prompt_tokens, 0);
 
     const double t2 = clock_ms();
 
