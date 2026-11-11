@@ -39,11 +39,7 @@ void Model::attention_forward(int layer_idx, const Tensor& x, Tensor& out,
 
     float* out_ptr = out.as<float>();
     const float* x_ptr = x.as<float>();
-    const float* wq_ptr = layer.wq.as<float>();
-    const float* wk_ptr = layer.wk.as<float>();
-    const float* wv_ptr = layer.wv.as<float>();
-    const float* wo_ptr = layer.wo.as<float>();
-    const float* attn_norm_ptr = layer.attn_norm.as<float>();
+    const float* attn_norm_ptr = layer.attn_norm.data.as<float>();
 
     // For each batch and token
     for (int b = 0; b < B; ++b) {
@@ -65,41 +61,9 @@ void Model::attention_forward(int layer_idx, const Tensor& x, Tensor& out,
             float k_local[4096];  // H_kv * head_dim
             float v_local[4096];  // H_kv * head_dim
 
-            // Q = x_norm @ Wq^T
-            for (int h = 0; h < H; ++h) {
-                for (int d = 0; d < head_dim; ++d) {
-                    float sum = 0;
-                    int row = h * head_dim + d;
-                    for (int i = 0; i < D; ++i) {
-                        sum += x_local[i] * wq_ptr[row * D + i];
-                    }
-                    q_local[row] = sum;
-                }
-            }
-
-            // K = x_norm @ Wk^T
-            for (int h = 0; h < H_kv; ++h) {
-                for (int d = 0; d < head_dim; ++d) {
-                    float sum = 0;
-                    int row = h * head_dim + d;
-                    for (int i = 0; i < D; ++i) {
-                        sum += x_local[i] * wk_ptr[row * D + i];
-                    }
-                    k_local[row] = sum;
-                }
-            }
-
-            // V = x_norm @ Wv^T
-            for (int h = 0; h < H_kv; ++h) {
-                for (int d = 0; d < head_dim; ++d) {
-                    float sum = 0;
-                    int row = h * head_dim + d;
-                    for (int i = 0; i < D; ++i) {
-                        sum += x_local[i] * wv_ptr[row * D + i];
-                    }
-                    v_local[row] = sum;
-                }
-            }
+            matvec(layer.wq, x_local, q_local, H * head_dim, D);
+            matvec(layer.wk, x_local, k_local, H_kv * head_dim, D);
+            matvec(layer.wv, x_local, v_local, H_kv * head_dim, D);
 
             // 3. RoPE on Q and K
             for (int h = 0; h < H; ++h) {
@@ -200,13 +164,7 @@ void Model::attention_forward(int layer_idx, const Tensor& x, Tensor& out,
 
             // 6. Output projection: attn_out @ Wo^T
             // Wo: [D, H*head_dim]
-            for (int d = 0; d < D; ++d) {
-                float sum = 0;
-                for (int i = 0; i < H * head_dim; ++i) {
-                    sum += attn_out[i] * wo_ptr[d * (H * head_dim) + i];
-                }
-                out_ptr[(b * T + t) * D + d] = sum;
-            }
+            matvec(layer.wo, attn_out, out_ptr + (b * T + t) * D, D, H * head_dim);
         }
     }
 }
@@ -216,15 +174,12 @@ void Model::ffn_forward(int layer_idx, const Tensor& x, Tensor& out) {
     int B = x.shape()[0];
     int T = x.shape()[1];
     int D = weights_.embed_dim;
-    int hidden_dim = layer.w1.shape()[0];  // Usually 4*D or 8/3*D
+    int hidden_dim = static_cast<int>(layer.w1.rows);  // Usually 4*D or 8/3*D
 
     if (out.shape() != Shape{B, T, D}) out.reshape({B, T, D});
 
     const float* x_ptr = x.as<float>();
-    const float* w1_ptr = layer.w1.as<float>();
-    const float* w2_ptr = layer.w2.as<float>();
-    const float* w3_ptr = layer.w3.as<float>();
-    const float* ffn_norm_ptr = layer.ffn_norm.as<float>();
+    const float* ffn_norm_ptr = layer.ffn_norm.data.as<float>();
     float* out_ptr = out.as<float>();
 
     for (int b = 0; b < B; ++b) {
@@ -239,41 +194,19 @@ void Model::ffn_forward(int layer_idx, const Tensor& x, Tensor& out) {
             for (int d = 0; d < D; ++d) x_local[d] = x_local[d] / rms * ffn_norm_ptr[d];
 
             // FFN: SiLU(x @ W1^T) * (x @ W3^T) @ W2^T
-            // Gate = SiLU(x @ W1^T)
             float gate[16384];  // Max hidden_dim
-            for (int i = 0; i < hidden_dim; ++i) {
-                float sum = 0;
-                for (int d = 0; d < D; ++d) {
-                    sum += x_local[d] * w1_ptr[i * D + d];
-                }
-                // SiLU
-                float sig = 1.0f / (1.0f + std::exp(-sum));
-                gate[i] = sum * sig;
-            }
-
-            // Up = x @ W3^T
             float up[16384];
+
+            matvec(layer.w1, x_local, gate, hidden_dim, D);
             for (int i = 0; i < hidden_dim; ++i) {
-                float sum = 0;
-                for (int d = 0; d < D; ++d) {
-                    sum += x_local[d] * w3_ptr[i * D + d];
-                }
-                up[i] = sum;
+                float sig = 1.0f / (1.0f + std::exp(-gate[i]));
+                gate[i] *= sig;  // SiLU
             }
 
-            // Element-wise multiply
-            for (int i = 0; i < hidden_dim; ++i) {
-                gate[i] *= up[i];
-            }
+            matvec(layer.w3, x_local, up, hidden_dim, D);
+            for (int i = 0; i < hidden_dim; ++i) gate[i] *= up[i];
 
-            // Down = gate @ W2^T
-            for (int d = 0; d < D; ++d) {
-                float sum = 0;
-                for (int i = 0; i < hidden_dim; ++i) {
-                    sum += gate[i] * w2_ptr[d * hidden_dim + i];
-                }
-                out_ptr[(b * T + t) * D + d] = sum;
-            }
+            matvec(layer.w2, gate, out_ptr + (b * T + t) * D, D, hidden_dim);
         }
     }
 }
@@ -316,17 +249,13 @@ Tensor Model::forward(const Tensor& input_ids, KVCache* kv_cache, int start_pos)
     // Embedding lookup
     Tensor x(DataType::F32, {B, T, D}, device_);
     const int32_t* ids = input_ids.as<int32_t>();
-    const float* emb_ptr = weights_.tok_embeddings.as<float>();
     float* x_ptr = x.as<float>();
 
     for (int b = 0; b < B; ++b) {
         for (int t = 0; t < T; ++t) {
             int id = ids[b * T + t];
             if (id < 0 || id >= weights_.vocab_size) id = 0;
-            const float* emb_row = emb_ptr + id * D;
-            for (int d = 0; d < D; ++d) {
-                x_ptr[(b * T + t) * D + d] = emb_row[d];
-            }
+            embedding_row(weights_.tok_embeddings, id, x_ptr + (b * T + t) * D, D);
         }
     }
 
@@ -359,7 +288,7 @@ Tensor Model::forward(const Tensor& input_ids, KVCache* kv_cache, int start_pos)
 
     // After every iteration layer_out holds the newest block output.
     Tensor& final_out = layer_out;
-    const float* final_norm_ptr = weights_.output_norm.as<float>();
+    const float* final_norm_ptr = weights_.output_norm.data.as<float>();
     float* final_ptr = final_out.as<float>();
 
     for (int b = 0; b < B; ++b) {
@@ -374,23 +303,17 @@ Tensor Model::forward(const Tensor& input_ids, KVCache* kv_cache, int start_pos)
         }
     }
 
-    // Output projection (if not tied)
-    // For tied weights, we'd do: logits = final_out @ tok_embeddings^T
-    // This gives [B, T, vocab_size]
+    // Output projection (tied to the embedding when output.weight is absent).
     Tensor logits(DataType::F32, {B, T, weights_.vocab_size}, device_);
-    const float* out_w = weights_.output.as<float>();
+    const HostWeight& out_w =
+        weights_.output_tied ? weights_.tok_embeddings : weights_.output;
     float* logits_ptr = logits.as<float>();
 
     for (int b = 0; b < B; ++b) {
         for (int t = 0; t < T; ++t) {
             const float* token_ptr = final_ptr + (b * T + t) * D;
-            for (int v = 0; v < weights_.vocab_size; ++v) {
-                float sum = 0;
-                for (int d = 0; d < D; ++d) {
-                    sum += token_ptr[d] * out_w[v * D + d];
-                }
-                logits_ptr[(b * T + t) * weights_.vocab_size + v] = sum;
-            }
+            float* row = logits_ptr + (b * T + t) * weights_.vocab_size;
+            matvec(out_w, token_ptr, row, weights_.vocab_size, D);
         }
     }
 

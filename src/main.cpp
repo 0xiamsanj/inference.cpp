@@ -21,6 +21,7 @@ void print_usage(const char* prog) {
     std::cout << "  --seed N             Random seed (default: random)\n";
     std::cout << "  --device DEV         auto | cpu | cuda (default: auto)\n";
     std::cout << "  --gpu-precision P    int16 | fp32 GPU weights (default: int16)\n";
+    std::cout << "  --host-precision P   int16 | fp32 host weights (default: int16)\n";
     std::cout << "  --chat               Apply the model's chat template\n";
     std::cout << "  --no-chat            Raw completion, even for instruct models\n";
     std::cout << "  --system TEXT        System message (implies --chat)\n";
@@ -72,6 +73,13 @@ int main(int argc, char* argv[]) {
                 else if (p == "fp32") config.gpu_int16 = false;
                 else std::cerr << "Warning: --gpu-precision expects int16 or fp32\n";
             }
+        } else if (arg == "--host-precision") {
+            if (++i < argc) {
+                std::string p = argv[i];
+                if (p == "int16") config.host_int16 = true;
+                else if (p == "fp32") config.host_int16 = false;
+                else std::cerr << "Warning: --host-precision expects int16 or fp32\n";
+            }
         } else if (arg == "--chat") {
             chat = true;
             chat_set = true;
@@ -114,7 +122,7 @@ int main(int argc, char* argv[]) {
         std::cout << "  Vocab size: " << parser.get_vocab_size() << "\n";
 
         // Load weights
-        auto weights = inference::load_model_weights(parser, inference::Device::cpu());
+        auto weights = inference::load_model_weights(parser, inference::Device::cpu(), config.host_int16);
 
         // Create model (moves weights in; no extra copy)
         inference::Model model(std::move(weights), inference::Device::cpu());

@@ -46,29 +46,48 @@ private:
     Device device_;
 };
 
+// A host weight can be stored as FP32 or symmetric INT16 with one scale per row.
+struct HostWeight {
+    Tensor data;    // F32 or I16, shape [rows, cols] (norms are [1, n])
+    Tensor scale;   // F32 [rows] when int16 == true
+    bool int16 = false;
+    int64_t rows = 0;
+    int64_t cols = 0;
+
+    bool empty() const { return rows == 0 || cols == 0; }
+    size_t gpu_bytes(bool gpu_int16) const {
+        const size_t n = static_cast<size_t>(rows) * cols;
+        if (gpu_int16) return n * sizeof(int16_t) + static_cast<size_t>(rows) * sizeof(float);
+        return n * sizeof(float);
+    }
+};
+
+// y = W @ x, where W is [rows, cols] and x is [cols].
+void matvec(const HostWeight& w, const float* x, float* y, int64_t rows, int64_t cols);
+
+// out = W[token, :] dequantized into FP32.
+void embedding_row(const HostWeight& w, int token, float* out, int64_t dim);
+
 // Single transformer block weights
 struct TransformerBlockWeights {
     // Attention
-    Tensor wq, wk, wv, wo;      // [embed, embed] or [embed, n_heads * head_dim]
-    Tensor q_norm, k_norm;       // Optional QK norm (for some models)
+    HostWeight wq, wk, wv, wo;
+    HostWeight q_norm, k_norm;
 
     // FFN
-    Tensor w1, w2, w3;           // Gate, Down, Up projections
+    HostWeight w1, w2, w3;
 
     // Norms
-    Tensor attn_norm;            // RMSNorm weight
-    Tensor ffn_norm;             // RMSNorm weight
-
-    // Quantization scales (if weights are quantized)
-    // For simplicity, we'll dequantize on load
+    HostWeight attn_norm;
+    HostWeight ffn_norm;
 };
 
 // Full model weights
 struct ModelWeights {
     // Embedding
-    Tensor tok_embeddings;       // [vocab, embed]
-    Tensor output_norm;          // Final RMSNorm
-    Tensor output;               // Output projection [embed, vocab] (often tied to tok_embeddings)
+    HostWeight tok_embeddings;   // [vocab, embed]
+    HostWeight output_norm;      // final RMSNorm
+    HostWeight output;           // output projection [vocab, embed] (or empty if tied)
 
     // Layers
     std::vector<TransformerBlockWeights> layers;
@@ -87,7 +106,9 @@ struct ModelWeights {
     bool output_tied = false;    // output projection shares the embedding
 };
 
-// Load weights from GGUF parser
-ModelWeights load_model_weights(const class GGUFParser& parser, Device device = Device::cpu());
+// Load weights from GGUF parser. host_int16 halves host RAM.
+ModelWeights load_model_weights(const class GGUFParser& parser,
+                                Device device = Device::cpu(),
+                                bool host_int16 = true);
 
 }  // namespace inference

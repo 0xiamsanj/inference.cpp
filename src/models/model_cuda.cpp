@@ -98,11 +98,40 @@ Weight quantize_i16(const Tensor& t) {
     return w;
 }
 
-Weight upload_weight(const Tensor& t, bool int16) {
-    if (int16) return quantize_i16(t);
+Weight upload_weight(const HostWeight& hw, bool int16) {
     Weight w;
+    if (int16) {
+        if (hw.int16) {
+            w.int16 = true;
+            w.data = cuda::alloc(hw.data.byte_size());
+            cuda::upload(w.data, hw.data.data(), hw.data.byte_size());
+            w.scale = cuda::alloc(hw.scale.byte_size());
+            cuda::upload(w.scale, hw.scale.data(), hw.scale.byte_size());
+            return w;
+        }
+        return quantize_i16(hw.data);
+    }
+
+    if (!hw.int16) {
+        w.int16 = false;
+        w.data = upload_tensor(hw.data);
+        return w;
+    }
+
+    // Host INT16 -> GPU FP32.
+    const int64_t n = hw.rows * hw.cols;
+    std::vector<float> tmp(static_cast<size_t>(n));
+    const int16_t* q = hw.data.as<int16_t>();
+    const float* scales = hw.scale.as<float>();
+    for (int64_t r = 0; r < hw.rows; ++r) {
+        for (int64_t c = 0; c < hw.cols; ++c) {
+            tmp[static_cast<size_t>(r * hw.cols + c)] =
+                static_cast<float>(q[r * hw.cols + c]) * scales[r];
+        }
+    }
     w.int16 = false;
-    w.data = upload_tensor(t);
+    w.data = cuda::alloc(tmp.size() * sizeof(float));
+    cuda::upload(w.data, tmp.data(), tmp.size() * sizeof(float));
     return w;
 }
 
@@ -113,12 +142,12 @@ void upload_weights(GpuState& s, const ModelWeights& w, bool int16) {
     s.Hkv = w.n_kv_heads;
     s.HD = w.head_dim;
     s.V = w.vocab_size;
-    s.FFN = static_cast<int>(w.layers[0].w1.shape()[0]);
+    s.FFN = static_cast<int>(w.layers[0].w1.rows);
     s.MAXSEQ = w.max_seq_len;
     s.eps = w.rms_eps;
 
     s.tok_emb = upload_weight(w.tok_embeddings, int16);
-    s.out_norm = upload_tensor(w.output_norm);
+    s.out_norm = upload_tensor(w.output_norm.data);
 
     // Output projection may be tied to the token embedding: share the buffer.
     if (w.output_tied) {
@@ -138,8 +167,8 @@ void upload_weights(GpuState& s, const ModelWeights& w, bool int16) {
         dst.w1 = upload_weight(src.w1, int16);
         dst.w2 = upload_weight(src.w2, int16);
         dst.w3 = upload_weight(src.w3, int16);
-        dst.attn_norm = upload_tensor(src.attn_norm);
-        dst.ffn_norm = upload_tensor(src.ffn_norm);
+        dst.attn_norm = upload_tensor(src.attn_norm.data);
+        dst.ffn_norm = upload_tensor(src.ffn_norm.data);
     }
 
     // Precompute the RoPE cos/sin table on the CPU (matches the CPU path).
@@ -184,15 +213,7 @@ void upload_weights(GpuState& s, const ModelWeights& w, bool int16) {
 
 size_t required_bytes(const ModelWeights& w, bool int16) {
     size_t n = 0;
-    auto add = [&](const Tensor& t) {
-        const int64_t numel = t.numel();
-        if (int16 && t.shape().size() == 2) {
-            n += static_cast<size_t>(numel) * sizeof(int16_t);
-            n += static_cast<size_t>(t.shape()[0]) * sizeof(float);
-        } else {
-            n += t.byte_size();
-        }
-    };
+    auto add = [&](const HostWeight& hw) { n += hw.gpu_bytes(int16); };
     add(w.tok_embeddings);
     add(w.output_norm);
     if (!w.output_tied) add(w.output);
@@ -206,7 +227,7 @@ size_t required_bytes(const ModelWeights& w, bool int16) {
     n += kv_per_layer * 2 * w.n_layers * sizeof(float);
     n += static_cast<size_t>(w.max_seq_len) * (w.head_dim / 2) * 2 * sizeof(float);
     n += static_cast<size_t>(w.embed_dim * 4 + w.vocab_size +
-                             static_cast<int64_t>(w.layers[0].w1.shape()[0]) * 2) * sizeof(float);
+                             static_cast<int64_t>(w.layers[0].w1.rows) * 2) * sizeof(float);
     return n;
 }
 

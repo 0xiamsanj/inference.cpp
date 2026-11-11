@@ -17,6 +17,7 @@ struct InferenceConfig {
     int seed = -1;  // -1 = random
     int eos_token_id = -1;  // stop generation when produced (if >= 0)
     bool gpu_int16 = true;  // store GPU weights as INT16 (half the VRAM)
+    bool host_int16 = true; // store host weights as INT16 (half the RAM)
 };
 
 // Main model class for inference

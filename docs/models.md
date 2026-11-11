@@ -29,9 +29,9 @@ Two caveats that aren't about the model family:
 1. **Chat templates cover the common formats.** Zephyr/TinyLlama, Llama-3,
    ChatML, Mistral, and Gemma are detected from `tokenizer.chat_template`.
    Unknown templates fall back to a simple `User:`/`Assistant:` format.
-2. **Host RAM is the real limit.** Weights are dequantized to FP32, so you need
-   `4 × params` bytes of RAM. TinyLlama is 4.4 GB. A 3B model would need 12 GB
-   before you even touch VRAM.
+2. **Host RAM matters less now.** Host weights are INT16 by default (~2 bytes per
+   parameter), so TinyLlama is ~2.2 GB (peak ~3 GB). `--host-precision fp32`
+   restores the old 4.4 GB layout.
 
 ## Why other families fail
 
@@ -239,23 +239,23 @@ The GPU limit is mostly `2 × params` for INT16 weights:
 | 3B | 6.0 GB | no |
 | 7B | 14 GB | no |
 
-The host limit is worse because of the FP32 dequantization:
+The host limit is much better than it used to be:
 
-| Params | Host FP32 | ~6 GB free? |
-|---|---:|---|
-| 1.1B | 4.4 GB | yes |
-| 1.5B | 6.0 GB | borderline |
-| 3B | 12 GB | no |
-| 7B | 28 GB | no |
+| Params | Host INT16 | Host FP32 | ~6 GB free? |
+|---|---:|---:|---|
+| 1.1B | 2.2 GB | 4.4 GB | yes |
+| 1.5B | 3.0 GB | 6.0 GB | yes / borderline |
+| 3B | 6.0 GB | 12 GB | borderline / no |
+| 7B | 14 GB | 28 GB | no |
 
 So on this laptop, **TinyLlama and Llama-3.2-1B are the sweet spot today**.
-Qwen2.5-0.5B after the bias/prefix work. If you want 2–3B models, the first
-problem to solve isn't VRAM, it's host RAM.
+Qwen2.5-0.5B after the bias/prefix work. For 2–3B on the GPU, the remaining
+blocker is VRAM, not host RAM.
 
-Two ways out:
+Two ways to go further:
 
-- keep the GGUF's Q4_K/Q6_K blocks in RAM and dequantize on use,
-- or mmap the file and stream/dequantize per matmul.
+- keep the GGUF's Q4_K/Q6_K blocks in VRAM and dequantize per matmul,
+- mmap the file and stream/dequantize host weights instead of holding them all.
 
 Either one changes the memory math completely.
 

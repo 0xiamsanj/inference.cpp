@@ -11,7 +11,7 @@ that works without installing the CUDA toolkit.
 It runs TinyLlama 1.1B on a 4 GB GTX 1650. That's the part I'm happiest about.
 
 ```
-CPU:  ~1 tok/s for TinyLlama
+CPU:  ~0.5 tok/s for TinyLlama (INT16 host; ~1 with FP32 host)
 GPU:  ~29 tok/s, INT16 weights, ~2.2 GB VRAM
 ```
 
@@ -71,8 +71,9 @@ Nothing else from CUDA.
 | Llama-3.2-3B | ~2 GB | no, ~6 GB | CPU only |
 | Mistral-7B | ~4.1 GB | no | CPU only, and RAM is a problem |
 
-Remember that the loader dequantizes to FP32 in host RAM. TinyLlama needs about
-4.4 GB of RAM. The GPU is not always the limiting factor.
+Host weights default to INT16 (~2 bytes/param): TinyLlama needs about 2.2 GB
+(peak ~3 GB during load). `--host-precision fp32` keeps the old 4.4 GB layout if
+you want maximum CPU accuracy.
 
 ## Build
 
@@ -145,7 +146,7 @@ The CLI reports decode speed separately from the first GPU upload and prompt
 prefill, because the first run looks much worse than later ones:
 
 ```
-[32 tokens, 27.41 tok/s decode, GPU init 6717 ms, prefill 240 ms]
+[32 tokens, 29.5 tok/s decode, GPU init 260 ms, prefill 240 ms]
 ```
 
 There's also a diagnostics tool. It prints weight statistics and the top logits
@@ -235,7 +236,11 @@ Measured here, decode-only:
 | Model | CPU | GPU INT16 |
 |---|---:|---:|
 | stories15M | ~54 tok/s | ~459 tok/s |
-| TinyLlama-1.1B | ~1 tok/s | ~29 tok/s |
+| TinyLlama-1.1B | ~0.5 tok/s | ~29 tok/s |
+
+Host INT16 halves RAM, but the scalar CPU dot product pays for the int16-to-float
+conversion: TinyLlama drops from ~1 tok/s to ~0.5 tok/s. Use
+`--host-precision fp32` when CPU speed matters more than RAM.
 
 The GPU path is memory-bound. TinyLlama reads ~2.2 GB of weights per token, and
 the card does about 43 GB/s on this kernel. That puts the floor near 20 tok/s, so

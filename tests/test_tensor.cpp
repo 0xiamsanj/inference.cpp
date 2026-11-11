@@ -1,5 +1,6 @@
 #include "core/tensor.hpp"
 #include "gguf/quantization.hpp"
+#include "models/transformer.hpp"
 #include "ops/ops.hpp"
 #include "ops/cuda_backend.hpp"
 #include "tokenizer/tokenizer.hpp"
@@ -291,6 +292,45 @@ TEST(ChatTemplateTest, GenericFallback) {
     EXPECT_EQ(tok.chat_format(), ChatFormat::Generic);
     EXPECT_EQ(tok.apply_chat_template({{"user", "hi"}}, true),
               "User: hi\nAssistant:");
+}
+
+TEST(HostWeightTest, MatvecInt16) {
+    HostWeight w;
+    w.int16 = true;
+    w.rows = 2;
+    w.cols = 2;
+    w.data = Tensor(DataType::I16, {2, 2});
+    w.scale = Tensor(DataType::F32, {2});
+    w.data.as<int16_t>()[0] = 1;
+    w.data.as<int16_t>()[1] = 2;
+    w.data.as<int16_t>()[2] = 6;
+    w.data.as<int16_t>()[3] = 8;
+    w.scale.as<float>()[0] = 1.0f;
+    w.scale.as<float>()[1] = 0.5f;
+
+    float x[2] = {5, 6};
+    float y[2] = {0, 0};
+    matvec(w, x, y, 2, 2);
+    EXPECT_FLOAT_EQ(y[0], 17.0f);
+    EXPECT_FLOAT_EQ(y[1], 39.0f);
+}
+
+TEST(HostWeightTest, EmbeddingRowInt16) {
+    HostWeight w;
+    w.int16 = true;
+    w.rows = 2;
+    w.cols = 3;
+    w.data = Tensor(DataType::I16, {2, 3});
+    w.scale = Tensor(DataType::F32, {2});
+    for (int i = 0; i < 6; ++i) w.data.as<int16_t>()[i] = static_cast<int16_t>(i + 1);
+    w.scale.as<float>()[0] = 1.0f;
+    w.scale.as<float>()[1] = 2.0f;
+
+    float out[3] = {0, 0, 0};
+    embedding_row(w, 1, out, 3);
+    EXPECT_FLOAT_EQ(out[0], 8.0f);
+    EXPECT_FLOAT_EQ(out[1], 10.0f);
+    EXPECT_FLOAT_EQ(out[2], 12.0f);
 }
 
 #ifdef WITH_CUDA

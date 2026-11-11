@@ -122,7 +122,8 @@ If `output.weight` is missing, the loader copies the embedding and sets
 `output_tied = true`. TinyLlama has a separate output tensor, so that doesn't
 trigger here.
 
-At the end of this stage you've got about 4.4 GB of FP32 weights in RAM. Then:
+At the end of this stage you've got about 2.2 GB of INT16 host weights (peak
+~3 GB during load). With `--host-precision fp32` it's the old 4.4 GB. Then:
 
 ```cpp
 Model model(std::move(weights), Device::cpu());
@@ -266,8 +267,9 @@ append
 stop on EOS or max_tokens
 ```
 
-On this machine the CPU path is roughly 1 tok/s for TinyLlama. Slow, but every
-number is visible.
+On this machine the CPU path is roughly 1 tok/s for TinyLlama with FP32 host
+weights, or ~0.5 tok/s with the default INT16 host copy. Slow either way, but
+every number is visible.
 
 ## Stage 5B: the GPU path
 
@@ -279,18 +281,18 @@ but the data lives in device buffers.
 `get_state(model, /*int16=*/true)`:
 
 1. Estimate VRAM and check it against `cuda::free_memory()`.
-2. For every linear weight, `quantize_i16`:
-   - per output row, `scale = max|w| / 32767`,
-   - int16 values into one buffer, float scales into another,
-   - upload both.
+2. For every linear weight:
+   - if the host copy is already INT16, upload its data and scales directly,
+   - otherwise `quantize_i16` from FP32 (per-row scale, then upload).
 3. Upload the FP32 norms.
 4. Build the RoPE table on the CPU and upload it.
 5. Allocate activations and 22 KV caches.
 6. Cache the state by `&model`.
 
-This is the ~6.7 s "GPU init" you see in the timing line. It reads 4.4 GB of host
-weights and writes 2.2 GB to the card. It only happens once per process; in
-interactive mode the next turn skips it.
+With the default INT16 host weights this is the ~0.26 s "GPU init" you see in
+the timing line: it uploads 2.2 GB and does no re-quantization. With
+`--host-precision fp32` it's back to ~6.7 s because it reads 4.4 GB and quantizes
+on the way. It only happens once per process; interactive turns skip it.
 
 ### Every token
 

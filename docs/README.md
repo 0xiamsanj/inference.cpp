@@ -34,7 +34,7 @@ matter.
 ```
 GGUF file
   → parse metadata + tensor descriptors
-  → dequantize to FP32 and reverse the dims
+  → dequantize to FP32, optionally quantize to host INT16, reverse the dims
   → tokenize the prompt
   → run the transformer (CPU scalar, or GPU kernels)
   → sample a token
@@ -51,8 +51,8 @@ That's it. The rest is details, and the details are where the fun is.
 - Runs them on an NVIDIA GPU without needing the CUDA toolkit: `clang++` turns
   the kernels into PTX, the PTX gets baked into the binary, and the driver JITs
   it at runtime.
-- Stores GPU weights as INT16 by default. That's what makes TinyLlama fit on a
-  4 GB GTX 1650.
+- Stores host and GPU weights as INT16 by default. That's what makes TinyLlama
+  fit on a 4 GB card and keeps host RAM around 2.2 GB.
 - Handles Q4_0, Q5_0, Q5_1, Q8_0, Q4_K, and Q6_K tensors.
 - Does the usual transformer stuff: RMSNorm, RoPE, GQA, SwiGLU, KV cache,
   top-k/top-p sampling.
@@ -94,8 +94,10 @@ Intel i5-9300HF, 15 GB RAM, GTX 1650 4 GB:
 
 | Model | CPU decode | GPU INT16 decode | First GPU upload |
 |---|---:|---:|---:|
-| stories15M | ~54 tok/s | ~459 tok/s | ~190 ms |
-| TinyLlama-1.1B | ~1 tok/s | ~29 tok/s | ~6.7 s |
+| stories15M | ~54 tok/s | ~459 tok/s | ~10 ms |
+| TinyLlama-1.1B | ~0.5 tok/s* | ~29 tok/s | ~0.26 s |
+
+* Host INT16 is the default. `--host-precision fp32` restores ~1 tok/s on the CPU.
 
 The GPU numbers are decode-only. They don't include the first upload or prompt
 prefill, because including those makes the first run look much worse than it is.

@@ -26,29 +26,36 @@ int main(int argc, char** argv) {
     std::string prompt = argc > 2 ? argv[2] : "Once upon a time";
 
     GGUFParser parser(argv[1]);
-    auto weights = load_model_weights(parser, Device::cpu());
+    auto weights = load_model_weights(parser, Device::cpu(), /*host_int16=*/true);
 
-    auto stats = [](const char* name, const Tensor& t) {
-        const float* p = t.as<float>();
+    auto stats = [](const char* name, const HostWeight& w) {
+        const int64_t n = w.rows * w.cols;
+        auto value = [&](int64_t i) -> float {
+            if (!w.int16) return w.data.as<float>()[i];
+            int64_t r = i / w.cols;
+            return static_cast<float>(w.data.as<int16_t>()[i]) * w.scale.as<float>()[r];
+        };
         float mn = 1e30f, mx = -1e30f;
         double sum = 0, sumsq = 0;
-        int64_t n = t.numel();
         bool nan = false;
         for (int64_t i = 0; i < n; ++i) {
-            float v = p[i];
-            if (std::isnan(v) || std::isinf(v)) { nan = true; if (nan) break; }
+            float v = value(i);
+            if (std::isnan(v) || std::isinf(v)) { nan = true; break; }
             mn = std::min(mn, v); mx = std::max(mx, v);
             sum += v; sumsq += double(v) * v;
         }
         double mean = sum / n;
         double var = sumsq / n - mean * mean;
-        std::printf("%-24s shape=[", name);
-        for (size_t i = 0; i < t.shape().size(); ++i) std::printf("%s%lld", i?",":"", (long long)t.shape()[i]);
-        std::printf("] min=%.4f max=%.4f mean=%.5f std=%.5f%s\n", mn, mx, mean, std::sqrt(std::max(0.0,var)), nan?" NAN!":"");
+        std::printf("%-24s %s shape=[", name, w.int16 ? "i16" : "f32");
+        for (size_t i = 0; i < w.data.shape().size(); ++i)
+            std::printf("%s%lld", i?",":"", (long long)w.data.shape()[i]);
+        std::printf("] min=%.4f max=%.4f mean=%.5f std=%.5f%s\n",
+                    mn, mx, mean, std::sqrt(std::max(0.0,var)), nan?" NAN!":"");
     };
 
     stats("tok_embeddings", weights.tok_embeddings);
-    stats("output", weights.output);
+    stats(weights.output_tied ? "output(tied)" : "output",
+          weights.output_tied ? weights.tok_embeddings : weights.output);
     stats("output_norm", weights.output_norm);
     stats("blk0.wq", weights.layers[0].wq);
     stats("blk0.w1", weights.layers[0].w1);

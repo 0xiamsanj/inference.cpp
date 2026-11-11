@@ -92,6 +92,7 @@ CLI flags, quickly:
 --seed N           reproducible sampling
 --device D         auto | cpu | cuda
 --gpu-precision P  int16 | fp32
+--host-precision P int16 | fp32
 --chat             apply the model's chat template
 --no-chat          force raw completion
 --system TEXT      system message (implies --chat)
@@ -358,7 +359,8 @@ In order:
 1. **On-GPU Q4_K/Q6_K matmul.** Keep the original blocks in VRAM and dequantize
    inside the kernel. This is the difference between "1.1B on a 4 GB card" and
    "2–3B on a 4 GB card".
-2. **Quantized host storage or mmap.** The FP32 host copy is the real RAM wall.
+2. **mmap the GGUF or stream host weights.** Host INT16 already halved RAM; this
+   removes the remaining full-weight copy.
 3. **CPU SIMD and threads.** 5–10× on the fallback path.
 4. **Arch generalization, biases, Qwen2.**
 5. **RoPE scaling.**

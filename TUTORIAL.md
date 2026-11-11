@@ -130,7 +130,9 @@ shapes to the llama.cpp output.
 ## Step 3 — Dequantization
 
 Quantization stores weights in fewer bits plus a scale. To run the math simply,
-we dequantize to FP32 once at load.
+we dequantize to FP32 at load. By default each 2-D weight is then quantized to
+INT16 with one scale per output row, so the FP32 copy is temporary and host RAM
+stays around 2 bytes per parameter.
 
 ### Q4_0
 
@@ -221,7 +223,9 @@ Names look like this:
 
 If `output.weight` is missing, copy the embedding and set `output_tied`.
 
-TinyLlama ends up as ~4.4 GB of host RAM. That's why the next section exists.
+By default, each 2-D weight is quantized to INT16 with one scale per row, so
+TinyLlama ends up around 2.2 GB of host RAM (peak ~3 GB during load). Use
+`--host-precision fp32` for the old 4.4 GB layout.
 
 ---
 
@@ -489,7 +493,8 @@ In order of payoff:
 
 1. **Quantized GPU matmul.** Keep Q4_K/Q6_K blocks in VRAM and dequantize inside
    the GEMV. This is what lets 2–3B models fit in 4 GB.
-2. **Quantized host storage or mmap.** The FP32 host copy is the real RAM wall.
+2. **mmap the GGUF or stream quantized host weights.** Host INT16 already halved
+   RAM; this would remove the remaining full-weight copy.
 3. **CPU SIMD, blocking, threads.** 5–10× on the fallback path.
 4. **Tiled attention** for long contexts.
 

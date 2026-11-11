@@ -110,10 +110,12 @@ Once the descriptors are parsed, `load_model_weights()` walks them:
 - read raw bytes,
 - dequantize (or convert F16) to FP32,
 - reverse the dims,
-- store in `ModelWeights`.
+- optionally quantize each 2-D weight to INT16 with per-row scales,
+- store it in a `HostWeight` (FP32 or INT16).
 
-TinyLlama ends up as about 4.4 GB of host RAM. That number matters later, because
-the GPU can hold the INT16 version but the host still holds the FP32 one.
+By default host weights are INT16: TinyLlama ends up around 2.2 GB (peak ~3 GB
+during load). With `--host-precision fp32` it's the old 4.4 GB layout. The
+integer path is a runtime format, not a new GGUF type.
 
 ## The CPU path
 
@@ -246,8 +248,9 @@ Greedy output is identical to the FP32 CPU path. If you want full precision back
 `--gpu-precision fp32` still works for models that fit.
 
 The scheme is not GGUF quantization. It's a runtime format. The original file
-stays on disk, the host keeps FP32, and the GPU gets INT16. That's a deliberate
-trade: simpler code, more host RAM.
+stays on disk. Host weights are INT16 by default, and the GPU gets INT16 too;
+`--host-precision fp32` keeps the host copy in FP32 if you want the CPU
+reference path at full precision.
 
 Prompt prefill is batched. Instead of running one token at a time, it processes
 the whole prompt through each layer with a tiled GEMM (32 tokens × 16 outputs per
@@ -258,14 +261,17 @@ single-token GEMV path.
 
 ## Where the memory goes
 
-Host RAM, current design:
+Host RAM, default (INT16 host weights):
 
 ```
-4 bytes × parameters  (+ temporary scratch during load)
+2 bytes × parameters
++ 4 bytes × output rows   (scales)
++ temporary FP32 scratch during load
 ```
 
-TinyLlama: ~4.4 GB. This is the real limit on a 15 GB machine with a desktop
-running.
+TinyLlama: ~2.2 GB steady state, ~3 GB peak during load. With
+`--host-precision fp32` it goes back to `4 bytes × parameters`, about 4.4 GB.
+That last mode is the real limit on a 15 GB machine with a desktop running.
 
 VRAM with INT16:
 
@@ -320,7 +326,9 @@ explicitly, `release_cuda_model(model)` does it while the process is alive.
 ## Where the time actually goes
 
 On the CPU, this thing is compute-bound. TinyLlama is about 2.2 GFLOP per token,
-and scalar C++ gets a couple of GFLOP/s. Hence around 1 tok/s.
+and scalar C++ gets a couple of GFLOP/s. Hence around 1 tok/s with FP32 host
+weights, or ~0.5 tok/s with the default INT16 host weights. The int16-to-float
+conversion is the cost of halving RAM.
 
 On the GPU, it's memory-bound. Every token reads every weight once. For INT16
 TinyLlama that's ~2.2 GB per token. I measured the GEMV kernel at about 43 GB/s on
