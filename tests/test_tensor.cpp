@@ -2,6 +2,7 @@
 #include "gguf/quantization.hpp"
 #include "ops/ops.hpp"
 #include "ops/cuda_backend.hpp"
+#include "tokenizer/tokenizer.hpp"
 #include <gtest/gtest.h>
 #include <cmath>
 
@@ -217,6 +218,79 @@ TEST(OpsTest, Sampling) {
     // Temperature 0 = argmax
     idx = sample_top_k_top_p(logits, 10, 1.0f, 0.0f);
     EXPECT_EQ(idx, 9);
+}
+
+TEST(ChatTemplateTest, Zephyr) {
+    Tokenizer tok;
+    tok.set_chat_template(
+        "{% for message in messages %}"
+        "{% if message['role'] == 'user' %}{{ '<|user|>\\n' + message['content'] + eos_token }}"
+        "{% elif message['role'] == 'assistant' %}{{ '<|assistant|>\\n' + message['content'] + eos_token }}"
+        "{% endif %}{% endfor %}"
+        "{% if add_generation_prompt %}{{ '<|assistant|>\\n' }}{% endif %}");
+    EXPECT_EQ(tok.chat_format(), ChatFormat::Zephyr);
+    EXPECT_TRUE(tok.chat_needs_bos());
+    std::string prompt = tok.apply_chat_template({{"user", "hi"}}, true);
+    EXPECT_EQ(prompt, "<|user|>\nhi</s>\n<|assistant|>\n");
+}
+
+TEST(ChatTemplateTest, Llama3) {
+    Tokenizer tok;
+    tok.set_chat_template(
+        "{% for message in messages %}"
+        "{{ '<|start_header_id|>' + message['role'] + '<|end_header_id|>\\n\\n'"
+        " + message['content'] + '<|eot_id|>' }}{% endfor %}"
+        "{% if add_generation_prompt %}"
+        "{{ '<|start_header_id|>assistant<|end_header_id|>\\n\\n' }}{% endif %}");
+    EXPECT_EQ(tok.chat_format(), ChatFormat::Llama3);
+    EXPECT_FALSE(tok.chat_needs_bos());
+    std::string prompt = tok.apply_chat_template({{"user", "hi"}}, true);
+    EXPECT_NE(prompt.find("<|begin_of_text|>"), std::string::npos);
+    EXPECT_NE(prompt.find("<|start_header_id|>user<|end_header_id|>"), std::string::npos);
+    EXPECT_NE(prompt.find("hi<|eot_id|>"), std::string::npos);
+    EXPECT_NE(prompt.find("<|start_header_id|>assistant<|end_header_id|>"), std::string::npos);
+}
+
+TEST(ChatTemplateTest, ChatML) {
+    Tokenizer tok;
+    tok.set_chat_template(
+        "{% for message in messages %}{{ '<|im_start|>' + message['role'] + '\\n'"
+        " + message['content'] + '<|im_end|>\\n' }}{% endfor %}"
+        "{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}{% endif %}");
+    EXPECT_EQ(tok.chat_format(), ChatFormat::ChatML);
+    std::string prompt = tok.apply_chat_template(
+        {{"system", "be nice"}, {"user", "hi"}}, true);
+    EXPECT_EQ(prompt,
+              "<|im_start|>system\nbe nice<|im_end|>\n"
+              "<|im_start|>user\nhi<|im_end|>\n"
+              "<|im_start|>assistant\n");
+}
+
+TEST(ChatTemplateTest, MistralAndGemma) {
+    Tokenizer mistral;
+    mistral.set_chat_template(
+        "{% for message in messages %}{% if message['role'] == 'user' %}"
+        "{{ '[INST] ' + message['content'] + ' [/INST]' }}{% endif %}{% endfor %}");
+    EXPECT_EQ(mistral.chat_format(), ChatFormat::Mistral);
+    EXPECT_EQ(mistral.apply_chat_template({{"user", "hi"}}, true),
+              "<s>[INST] hi [/INST]");
+
+    Tokenizer gemma;
+    gemma.set_chat_template(
+        "{% for message in messages %}{% if message['role'] == 'user' %}"
+        "{{ '<start_of_turn>user\\n' + message['content'] + '<end_of_turn>\\n' }}"
+        "{% endif %}{% endfor %}"
+        "{% if add_generation_prompt %}{{ '<start_of_turn>model\\n' }}{% endif %}");
+    EXPECT_EQ(gemma.chat_format(), ChatFormat::Gemma);
+    EXPECT_EQ(gemma.apply_chat_template({{"user", "hi"}}, true),
+              "<start_of_turn>user\nhi<end_of_turn>\n<start_of_turn>model\n");
+}
+
+TEST(ChatTemplateTest, GenericFallback) {
+    Tokenizer tok;
+    EXPECT_EQ(tok.chat_format(), ChatFormat::Generic);
+    EXPECT_EQ(tok.apply_chat_template({{"user", "hi"}}, true),
+              "User: hi\nAssistant:");
 }
 
 #ifdef WITH_CUDA

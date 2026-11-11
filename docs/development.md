@@ -92,6 +92,9 @@ CLI flags, quickly:
 --seed N           reproducible sampling
 --device D         auto | cpu | cuda
 --gpu-precision P  int16 | fp32
+--chat             apply the model's chat template
+--no-chat          force raw completion
+--system TEXT      system message (implies --chat)
 --tokenizer PATH   tokenizer.json (GGUF fallback is automatic)
 -i                 interactive
 ```
@@ -189,7 +192,7 @@ isolated GEMV benchmark in the next section before profiling the whole model.
 | Garbage only on some models | base quant format, often Q6_K |
 | Right first token, drift later | KV positions, RoPE table, or seed |
 | Interactive aborts | prompt + generated exceeded `max_seq_len` |
-| Instruct model gives mediocre answers | no chat template |
+| Instruct model gives mediocre answers | wrong or missing chat template; try `--chat` / `--no-chat` |
 
 ## Profiling
 
@@ -359,9 +362,8 @@ In order:
 3. **Batched prefill.** A real GEMM for the prompt instead of token-by-token.
 4. **CPU SIMD and threads.** 5–10× on the fallback path.
 5. **Arch generalization, biases, Qwen2.**
-6. **Chat templates.**
-7. **RoPE scaling.**
-8. **BERT embeddings** as a second task.
+6. **RoPE scaling.**
+7. **BERT embeddings** as a second task.
 
 Every one of those should come with a test and a before/after number. That's the
 only way to know it actually helped.

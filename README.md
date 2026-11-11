@@ -25,9 +25,9 @@ GPU:  ~29 tok/s, INT16 weights, ~2.2 GB VRAM
 - Does RMSNorm, RoPE, GQA, SwiGLU, KV caching, top-k/top-p sampling, and
   interactive generation.
 
-What it doesn't do: batching, chat templates, other architecture families, or
-several GGUF quant formats. Those are known gaps, not surprises. The details are
-in [docs/models.md](docs/models.md).
+What it doesn't do: batching, other architecture families, several GGUF quant
+formats, or a general Jinja chat-template engine. It does recognize the common
+chat formats (Zephyr/TinyLlama, Llama-3, ChatML, Mistral, Gemma).
 
 ## Docs
 
@@ -131,6 +131,11 @@ curl -L -o models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf \
 ./build/inference --device cuda --gpu-precision int16 --tokens 64 \
   models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf "The capital of France is"
 
+# Instruct model with its chat template
+./build/inference --device cuda --gpu-precision int16 --chat --tokens 64 \
+  models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf "What is the capital of France?"
+
+# Interactive mode uses the template automatically when one is present
 ./build/inference -i --device auto \
   models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf
 ```
@@ -269,7 +274,7 @@ The longer version, including the Qwen2 recipe, is in
 | Garbage from token 0 | tokenizer, dequant, or tensor layout |
 | Garbage only on some models | probably a quant format, often Q6_K |
 | Slow first run | that's the weight upload; decode speed is reported separately |
-| Instruct model is mediocre | no chat template yet |
+| Instruct model is mediocre | wrong or missing chat template; try `--chat` / `--no-chat` |
 
 ## Thanks and references
 

@@ -378,9 +378,10 @@ For `"The capital of France is"` you should get:
 
 If you get something else, the merge ranks or the prefix handling are wrong.
 
-**Not implemented:** chat templates. So Instruct models get the raw prompt. It
-works, but it's worse. If you want better answers, this is the first thing to
-add.
+**Chat templates:** the tokenizer reads `tokenizer.chat_template` and recognizes
+the common formats (Zephyr/TinyLlama, Llama-3, ChatML, Mistral, Gemma). Pass
+`--chat` to wrap a single prompt, or use interactive mode. An unknown template
+falls back to a simple `User:`/`Assistant:` format.
 
 ---
 
@@ -507,7 +508,7 @@ it, you don't know if it helped.
 | Right first token, drift later | KV positions or RoPE |
 | Very slow first run | weight upload; decode is timed separately |
 | `Tensor not found` | model isn't Llama-shaped |
-| Instruct model is mediocre | no chat template |
+| Instruct model is mediocre | wrong or missing chat template; try `--chat` / `--no-chat` |
 | Interactive aborts | context length exceeded |
 
 When I'm stuck, I check in this order:

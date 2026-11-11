@@ -184,6 +184,14 @@ void Tokenizer::load_from_gguf(const GGUFParser& parser) {
     eos_id_ = special("tokenizer.ggml.eos_token_id", 2);
     unk_id_ = special("tokenizer.ggml.unknown_token_id", 0);
     pad_id_ = special("tokenizer.ggml.padding_token_id", -1);
+
+    try {
+        chat_template_ = parser.get_metadata<std::string>("tokenizer.chat_template");
+    } catch (...) {
+        chat_template_.clear();
+    }
+
+    collect_special_pieces();
 }
 
 void Tokenizer::load_huggingface(const std::string& path) {
@@ -275,6 +283,37 @@ void Tokenizer::load_huggingface(const std::string& path) {
     eos_id_ = find_special("eos_token_id", 2);
     pad_id_ = find_special("pad_token_id", -1);
     unk_id_ = find_special("unk_token_id", 0);
+
+    // Optional chat template (same string HuggingFace exposes).
+    size_t ct = content.find("\"chat_template\"");
+    if (ct != std::string::npos) {
+        size_t colon = content.find(':', ct);
+        if (colon != std::string::npos) {
+            size_t q = content.find('"', colon + 1);
+            if (q != std::string::npos) {
+                try {
+                    chat_template_ = read_json_string(content, q);
+                } catch (...) {
+                    chat_template_.clear();
+                }
+            }
+        }
+    }
+
+    collect_special_pieces();
+}
+
+void Tokenizer::collect_special_pieces() {
+    special_pieces_.clear();
+    for (const auto& entry : vocab_) {
+        const std::string& piece = entry.first;
+        if (piece.size() >= 3 && piece.front() == '<' && piece.back() == '>') {
+            special_pieces_.emplace_back(piece, entry.second);
+        }
+    }
+    // Longest first so <|start_header_id|> wins over shorter prefixes.
+    std::sort(special_pieces_.begin(), special_pieces_.end(),
+              [](const auto& a, const auto& b) { return a.first.size() > b.first.size(); });
 }
 
 std::vector<std::string> Tokenizer::utf8_symbols(const std::string& text) const {
@@ -356,11 +395,7 @@ std::vector<int> Tokenizer::bpe_encode_symbols(const std::vector<std::string>& i
     return ids;
 }
 
-std::vector<int> Tokenizer::encode(const std::string& text, bool add_bos, bool add_eos) const {
-    std::vector<int> tokens;
-
-    if (add_bos && bos_id_ >= 0) tokens.push_back(bos_id_);
-
+std::vector<int> Tokenizer::encode_plain(const std::string& text) const {
     // SentencePiece-style: spaces become '▁', and a dummy prefix is added.
     std::string normalized;
     normalized.reserve(text.size() + 4);
@@ -372,6 +407,7 @@ std::vector<int> Tokenizer::encode(const std::string& text, bool add_bos, bool a
 
     // BPE per whitespace-marked chunk. Merging across ▁ boundaries is valid
     // for Llama-style vocabularies, but chunking keeps behavior predictable.
+    std::vector<int> tokens;
     std::vector<std::string> chunk;
     for (const auto& sym : utf8_symbols(normalized)) {
         chunk.push_back(sym);
@@ -388,6 +424,43 @@ std::vector<int> Tokenizer::encode(const std::string& text, bool add_bos, bool a
         std::vector<int> part = bpe_encode_symbols(chunk);
         tokens.insert(tokens.end(), part.begin(), part.end());
     }
+    return tokens;
+}
+
+std::vector<int> Tokenizer::encode(const std::string& text, bool add_bos, bool add_eos) const {
+    std::vector<int> tokens;
+    if (add_bos && bos_id_ >= 0) tokens.push_back(bos_id_);
+
+    auto flush_plain = [&](std::string& plain) {
+        if (plain.empty()) return;
+        std::vector<int> part = encode_plain(plain);
+        tokens.insert(tokens.end(), part.begin(), part.end());
+        plain.clear();
+    };
+
+    // Emit known special markers verbatim (<|user|>, <s>, <start_of_turn>, ...)
+    // instead of letting BPE shred them into characters.
+    std::string plain;
+    for (size_t i = 0; i < text.size();) {
+        bool matched = false;
+        if (text[i] == '<') {
+            for (const auto& [piece, id] : special_pieces_) {
+                if (text.size() - i >= piece.size() &&
+                    text.compare(i, piece.size(), piece) == 0) {
+                    flush_plain(plain);
+                    tokens.push_back(id);
+                    i += piece.size();
+                    matched = true;
+                    break;
+                }
+            }
+        }
+        if (!matched) {
+            plain.push_back(text[i]);
+            ++i;
+        }
+    }
+    flush_plain(plain);
 
     if (add_eos && eos_id_ >= 0) tokens.push_back(eos_id_);
     return tokens;
@@ -443,6 +516,138 @@ std::string Tokenizer::decode(const std::vector<int>& tokens) const {
         }
     }
     flush_bytes();
+    return out;
+}
+
+std::string Tokenizer::eos_piece() const {
+    auto it = id_to_piece_.find(eos_id_);
+    if (it != id_to_piece_.end()) return it->second;
+    return "</s>";
+}
+
+ChatFormat Tokenizer::chat_format() const {
+    if (chat_template_.empty()) return ChatFormat::Generic;
+    auto has = [&](const char* s) { return chat_template_.find(s) != std::string::npos; };
+    if (has("<|start_header_id|>")) return ChatFormat::Llama3;
+    if (has("<|im_start|>")) return ChatFormat::ChatML;
+    if (has("<|user|>") && has("<|assistant|>")) return ChatFormat::Zephyr;
+    if (has("[INST]")) return ChatFormat::Mistral;
+    if (has("<start_of_turn>")) return ChatFormat::Gemma;
+    return ChatFormat::Generic;
+}
+
+bool Tokenizer::chat_needs_bos() const {
+    switch (chat_format()) {
+        case ChatFormat::Zephyr:
+        case ChatFormat::Gemma:
+        case ChatFormat::Generic:
+            return true;
+        case ChatFormat::Llama3:
+        case ChatFormat::ChatML:
+        case ChatFormat::Mistral:
+            return false;
+    }
+    return true;
+}
+
+std::string Tokenizer::apply_chat_template(const std::vector<ChatMessage>& messages,
+                                           bool add_generation_prompt) const {
+    const std::string eos = eos_piece();
+
+    std::string system;
+    std::vector<ChatMessage> turns;
+    for (const auto& m : messages) {
+        if (m.role == "system") {
+            if (!system.empty()) system += "\n";
+            system += m.content;
+        } else {
+            turns.push_back(m);
+        }
+    }
+
+    const ChatFormat format = chat_format();
+    std::string out;
+
+    auto role_or = [](const ChatMessage& m, const char* fallback) {
+        return m.role.empty() ? std::string(fallback) : m.role;
+    };
+
+    switch (format) {
+        case ChatFormat::Zephyr: {
+            if (!system.empty()) out += "<|system|>\n" + system + eos + "\n";
+            for (const auto& m : turns) {
+                if (m.role == "user") out += "<|user|>\n" + m.content + eos + "\n";
+                else if (m.role == "assistant") out += "<|assistant|>\n" + m.content + eos + "\n";
+            }
+            if (add_generation_prompt) out += "<|assistant|>\n";
+            break;
+        }
+        case ChatFormat::Llama3: {
+            out += "<|begin_of_text|>";
+            if (!system.empty()) {
+                out += "<|start_header_id|>system<|end_header_id|>\n\n" + system + "<|eot_id|>";
+            }
+            for (const auto& m : turns) {
+                out += "<|start_header_id|>" + role_or(m, "user") +
+                       "<|end_header_id|>\n\n" + m.content + "<|eot_id|>";
+            }
+            if (add_generation_prompt) {
+                out += "<|start_header_id|>assistant<|end_header_id|>\n\n";
+            }
+            break;
+        }
+        case ChatFormat::ChatML: {
+            if (!system.empty()) out += "<|im_start|>system\n" + system + "<|im_end|>\n";
+            for (const auto& m : turns) {
+                out += "<|im_start|>" + role_or(m, "user") + "\n" +
+                       m.content + "<|im_end|>\n";
+            }
+            if (add_generation_prompt) out += "<|im_start|>assistant\n";
+            break;
+        }
+        case ChatFormat::Mistral: {
+            out += "<s>";
+            bool first_user = true;
+            for (const auto& m : turns) {
+                if (m.role == "assistant") {
+                    out += " " + m.content + "</s>";
+                } else {
+                    out += "[INST] ";
+                    if (first_user && !system.empty()) out += system + "\n";
+                    out += m.content + " [/INST]";
+                    first_user = false;
+                }
+            }
+            // Generation starts right after the last [/INST]; nothing to add.
+            (void)add_generation_prompt;
+            break;
+        }
+        case ChatFormat::Gemma: {
+            bool first_user = true;
+            for (const auto& m : turns) {
+                if (m.role == "assistant") {
+                    out += "<start_of_turn>model\n" + m.content + "<end_of_turn>\n";
+                } else {
+                    out += "<start_of_turn>user\n";
+                    if (first_user && !system.empty()) out += system + "\n";
+                    out += m.content + "<end_of_turn>\n";
+                    first_user = false;
+                }
+            }
+            if (add_generation_prompt) out += "<start_of_turn>model\n";
+            break;
+        }
+        case ChatFormat::Generic:
+        default: {
+            if (!system.empty()) out += "System: " + system + "\n";
+            for (const auto& m : turns) {
+                if (m.role == "assistant") out += "Assistant: " + m.content + "\n";
+                else out += "User: " + m.content + "\n";
+            }
+            if (add_generation_prompt) out += "Assistant:";
+            break;
+        }
+    }
     return out;
 }
 

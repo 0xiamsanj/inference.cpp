@@ -26,8 +26,9 @@ These all use the same block: RMSNorm → GQA attention with RoPE → SwiGLU FFN
 
 Two caveats that aren't about the model family:
 
-1. **No chat template.** Instruct models get the raw prompt. They still answer,
-   but worse. This is the highest-value small fix in the project.
+1. **Chat templates cover the common formats.** Zephyr/TinyLlama, Llama-3,
+   ChatML, Mistral, and Gemma are detected from `tokenizer.chat_template`.
+   Unknown templates fall back to a simple `User:`/`Assistant:` format.
 2. **Host RAM is the real limit.** Weights are dequantized to FP32, so you need
    `4 × params` bytes of RAM. TinyLlama is 4.4 GB. A 3B model would need 12 GB
    before you even touch VRAM.
@@ -118,17 +119,20 @@ first.
 Qwen2.5-0.5B fits easily. 1.5B is around 3 GB of INT16 weights plus KV, so it's
 borderline on a 4 GB card with a desktop running.
 
-### 4. Chat templates (S)
+### 4. Chat templates — done
 
-The GGUF already contains `tokenizer.chat_template` as a Jinja string. You have
-three options:
+The tokenizer reads `tokenizer.chat_template`, detects the common formats, and
+renders them with the right markers:
 
-- hardcode the common templates (Llama 3, ChatML, Zephyr/TinyLlama),
-- implement a tiny Jinja subset (for/if/variables), or
-- add a `--chat-template` flag with a simple format string.
+- Zephyr/TinyLlama (`<|system|>`, `<|user|>`, `<|assistant|>`)
+- Llama-3 (`<|start_header_id|>`)
+- ChatML (`<|im_start|>`)
+- Mistral (`[INST]`)
+- Gemma (`<start_of_turn>`)
 
-Honestly, hardcoding the three or four templates people actually use is the
-pragmatic move. I'd do that first.
+Interactive mode applies the template automatically; `--chat` and `--no-chat`
+override it, and `--system` adds a system message. A full Jinja interpreter is
+still not implemented, so unknown templates fall back to a generic format.
 
 ### 5. RoPE scaling (S)
 
@@ -322,8 +326,7 @@ Don't try to support everything. Do this:
 1. arch-key generalization,
 2. bias tensors,
 3. Qwen2/2.5,
-4. chat templates,
-5. RoPE scaling.
+4. RoPE scaling.
 
 That's a few days of work and it turns the engine from "my TinyLlama thing" into
 something you can point at a decent chunk of the small-model ecosystem.

@@ -286,10 +286,11 @@ Encoding is SentencePiece-ish: replace spaces with `▁`, add a dummy prefix, sp
 into UTF-8 codepoints, then merge adjacent pairs by lowest merge rank. Unknown
 symbols fall back to `<0xXX>` byte tokens.
 
-I haven't implemented chat templates. That means an instruct model gets the raw
-prompt, not the `<|user|>...<|assistant|>` wrapper it was trained on. It works,
-but it's noticeably worse. If you're going to add one thing for output quality,
-add this.
+The tokenizer detects the common chat formats from `tokenizer.chat_template`
+(Zephyr/TinyLlama, Llama-3, ChatML, Mistral, Gemma) and renders messages with the
+right markers. It is not a general Jinja implementation: an unknown template
+falls back to a simple `User:`/`Assistant:` format. Interactive mode uses the
+template automatically; `--chat` and `--no-chat` override it.
 
 Sampling is straightforward: temperature, softmax, top-k, top-p, renormalize,
 draw. `temperature <= 0` short-circuits to argmax. Seeds use

@@ -21,6 +21,9 @@ void print_usage(const char* prog) {
     std::cout << "  --seed N             Random seed (default: random)\n";
     std::cout << "  --device DEV         auto | cpu | cuda (default: auto)\n";
     std::cout << "  --gpu-precision P    int16 | fp32 GPU weights (default: int16)\n";
+    std::cout << "  --chat               Apply the model's chat template\n";
+    std::cout << "  --no-chat            Raw completion, even for instruct models\n";
+    std::cout << "  --system TEXT        System message (implies --chat)\n";
     std::cout << "  --tokenizer PATH     Tokenizer file (tokenizer.json)\n";
     std::cout << "  -i, --interactive    Interactive chat mode\n";
     std::cout << "  -h, --help           Show this help\n";
@@ -36,7 +39,10 @@ int main(int argc, char* argv[]) {
     std::string tokenizer_path;
     std::string prompt;
     std::string device = "auto";
+    std::string system_prompt;
     bool interactive = false;
+    bool chat = false;
+    bool chat_set = false;
 
     inference::InferenceConfig config;
 
@@ -65,6 +71,18 @@ int main(int argc, char* argv[]) {
                 if (p == "int16") config.gpu_int16 = true;
                 else if (p == "fp32") config.gpu_int16 = false;
                 else std::cerr << "Warning: --gpu-precision expects int16 or fp32\n";
+            }
+        } else if (arg == "--chat") {
+            chat = true;
+            chat_set = true;
+        } else if (arg == "--no-chat") {
+            chat = false;
+            chat_set = true;
+        } else if (arg == "--system") {
+            if (++i < argc) {
+                system_prompt = argv[i];
+                chat = true;
+                chat_set = true;
             }
         } else if (arg == "--tokenizer") {
             if (++i < argc) tokenizer_path = argv[i];
@@ -149,6 +167,16 @@ int main(int argc, char* argv[]) {
             std::cerr << "Falling back to byte tokenizer (output will be poor).\n";
         }
 
+        // Interactive mode uses the model's chat template when one exists.
+        // Single-prompt completion stays raw unless --chat is passed.
+        if (!chat_set) chat = interactive && tokenizer_ready && tokenizer.has_chat_template();
+        if (chat && tokenizer_ready) {
+            std::cout << "Chat mode: "
+                      << (tokenizer.has_chat_template() ? "model template"
+                                                        : "generic fallback")
+                      << "\n";
+        }
+
         // Create CPU KV cache (also used as the fallback path)
         inference::KVCache kv_cache(model.n_layers(), model.max_seq_len(),
                                      model.n_heads(), model.head_dim());
@@ -226,6 +254,13 @@ int main(int argc, char* argv[]) {
             std::cout << "Type 'exit' or 'quit' to exit\n";
             std::cout << "Type 'clear' to clear context\n\n";
 
+            std::vector<inference::ChatMessage> history;
+            auto reset_history = [&] {
+                history.clear();
+                if (!system_prompt.empty()) history.push_back({"system", system_prompt});
+            };
+            reset_history();
+
             std::string line;
             while (true) {
                 std::cout << "> ";
@@ -234,6 +269,7 @@ int main(int argc, char* argv[]) {
                 if (line == "exit" || line == "quit") break;
                 if (line == "clear") {
                     kv_cache.clear();
+                    reset_history();
                     std::cout << "[Context cleared]\n";
                     continue;
                 }
@@ -242,7 +278,17 @@ int main(int argc, char* argv[]) {
                 // Encode
                 std::vector<int> prompt_tokens;
                 if (tokenizer.vocab_size() > 0) {
-                    prompt_tokens = tokenizer.encode(line, true, false);
+                    if (chat) {
+                        history.push_back({"user", line});
+                        std::string rendered =
+                            tokenizer.apply_chat_template(history, true);
+                        prompt_tokens = tokenizer.encode(
+                            rendered, tokenizer.chat_needs_bos(), false);
+                        // Re-prefill the full conversation on the CPU path.
+                        kv_cache.clear();
+                    } else {
+                        prompt_tokens = tokenizer.encode(line, true, false);
+                    }
                 } else {
                     // Dummy: each char = token
                     for (char c : line) prompt_tokens.push_back(static_cast<int>(c));
@@ -266,6 +312,8 @@ int main(int argc, char* argv[]) {
                 std::cout << output << "\n\n";
                 print_timing(new_tokens.size(), std::chrono::duration<double>(gen_time));
                 std::cout << "\n";
+
+                if (chat) history.push_back({"assistant", output});
             }
         } else {
             // Single prompt
@@ -278,7 +326,19 @@ int main(int argc, char* argv[]) {
 
             std::vector<int> prompt_tokens;
             if (tokenizer.vocab_size() > 0) {
-                prompt_tokens = tokenizer.encode(prompt, true, false);
+                if (chat) {
+                    std::vector<inference::ChatMessage> history;
+                    if (!system_prompt.empty()) {
+                        history.push_back({"system", system_prompt});
+                    }
+                    history.push_back({"user", prompt});
+                    std::string rendered =
+                        tokenizer.apply_chat_template(history, true);
+                    prompt_tokens = tokenizer.encode(
+                        rendered, tokenizer.chat_needs_bos(), false);
+                } else {
+                    prompt_tokens = tokenizer.encode(prompt, true, false);
+                }
             } else {
                 for (char c : prompt) prompt_tokens.push_back(static_cast<int>(c));
             }

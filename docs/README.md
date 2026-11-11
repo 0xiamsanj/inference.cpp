@@ -60,7 +60,8 @@ That's it. The rest is details, and the details are where the fun is.
 ## What it doesn't do yet
 
 - Only the Llama family. Qwen, Gemma, Phi, and friends need code changes.
-- No chat templates. Instruct models behave like raw completion.
+- Chat templates cover the common formats (Zephyr/TinyLlama, Llama-3, ChatML,
+  Mistral, Gemma), but this is not a general Jinja interpreter.
 - No batching. The GPU processes prompts one token at a time.
 - The CPU path is single-threaded and scalar.
 - Several GGUF quant formats are still unimplemented.
