@@ -7,7 +7,7 @@ same numbers.
 Here's the command:
 
 ```bash
-./build/inference_cli --device cuda --gpu-precision int16 \
+./build/inference --device cuda --gpu-precision int16 \
   --tokens 16 --temp 0 \
   models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf "The capital of France is"
 ```

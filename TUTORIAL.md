@@ -1,4 +1,4 @@
-# Build Your Own LLM Inference Engine — Step by Step
+# Build Your Own LLM Inference Engine — inference.cpp
 
 I wrote this tutorial the way I wish someone had explained it to me: start with a
 tensor, end with a model generating text, and don't skip the parts that are
@@ -412,7 +412,7 @@ cmake --build build -j$(nproc)
 curl -L -o models/stories15M-q4_0.gguf \
   https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories15M-q4_0.gguf
 
-./build/inference_cli --device cuda --gpu-precision int16 \
+./build/inference --device cuda --gpu-precision int16 \
   --tokens 40 --temp 0.8 models/stories15M-q4_0.gguf "Once upon a time"
 ```
 

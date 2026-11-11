@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(InferenceEngine VERSION 0.1.0 LANGUAGES CXX)
+project(inference.cpp VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -114,10 +114,19 @@ if(WITH_AVX2)
 endif()
 
 # Executable
-add_executable(inference_cli
+add_executable(inference
     src/main.cpp
 )
-target_link_libraries(inference_cli PRIVATE inference_engine)
+target_link_libraries(inference PRIVATE inference_engine)
+
+# Keep a convenience symlink with the project name in the build directory.
+add_custom_command(TARGET inference POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E rm -f "inference.cpp"
+    COMMAND ${CMAKE_COMMAND} -E create_symlink
+            "$<TARGET_FILE_NAME:inference>" "inference.cpp"
+    WORKING_DIRECTORY "$<TARGET_FILE_DIR:inference>"
+    COMMENT "Creating inference.cpp symlink"
+)
 
 # Tests
 enable_testing()
@@ -130,7 +139,7 @@ install(TARGETS inference_engine
     RUNTIME DESTINATION bin
 )
 install(DIRECTORY include/ DESTINATION include)
-install(TARGETS inference_cli RUNTIME DESTINATION bin)
+install(TARGETS inference RUNTIME DESTINATION bin)
 # Diagnostic tool
 add_executable(debug_logits tools/debug_logits.cpp)
 target_link_libraries(debug_logits PRIVATE inference_engine)

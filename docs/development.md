@@ -52,7 +52,7 @@ A few real-world notes:
 The three binaries:
 
 ```
-build/inference_cli
+build/inference
 build/debug_logits
 build/tests/run_tests
 ```
@@ -61,20 +61,20 @@ build/tests/run_tests
 
 ```bash
 # tiny model, GPU
-./build/inference_cli --device cuda --gpu-precision int16 \
+./build/inference --device cuda --gpu-precision int16 \
   --tokens 100 --temp 0.8 models/stories15M-q4_0.gguf "Once upon a time"
 
 # TinyLlama on the GPU
-./build/inference_cli --device cuda --gpu-precision int16 \
+./build/inference --device cuda --gpu-precision int16 \
   --tokens 64 --temp 0.7 models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf \
   "The capital of France is"
 
 # CPU reference
-./build/inference_cli --device cpu --tokens 20 \
+./build/inference --device cpu --tokens 20 \
   models/stories15M-q4_0.gguf "Hello"
 
 # interactive
-./build/inference_cli -i --device auto \
+./build/inference -i --device auto \
   models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf
 
 # logits and weight stats
@@ -160,8 +160,8 @@ is wrong. The sampler is almost never the problem.
 Greedy is the clean comparison:
 
 ```bash
-./build/inference_cli --device cpu  --tokens 20 --temp 0 model.gguf "prompt"
-./build/inference_cli --device cuda --gpu-precision fp32 --tokens 20 --temp 0 model.gguf "prompt"
+./build/inference --device cpu  --tokens 20 --temp 0 model.gguf "prompt"
+./build/inference --device cuda --gpu-precision fp32 --tokens 20 --temp 0 model.gguf "prompt"
 ```
 
 Use FP32 on the GPU for parity. INT16 can drift after enough tokens; that's
@@ -196,8 +196,8 @@ isolated GEMV benchmark in the next section before profiling the whole model.
 On the CPU:
 
 ```bash
-perf stat ./build/inference_cli --device cpu --tokens 16 model.gguf "Hello"
-perf record -g ./build/inference_cli --device cpu --tokens 16 model.gguf "Hello"
+perf stat ./build/inference --device cpu --tokens 16 model.gguf "Hello"
+perf record -g ./build/inference --device cpu --tokens 16 model.gguf "Hello"
 ```
 
 It'll be dominated by the GEMVs inside `attention_forward`, `ffn_forward`, and

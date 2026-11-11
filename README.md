@@ -1,4 +1,6 @@
-# Inference Engine from Scratch (C++)
+# inference.cpp
+
+A from-scratch LLM inference engine in C++20.
 
 I built this because I wanted to see what actually happens inside an LLM
 inference engine. Not the diagram version. The bytes-and-loops version.
@@ -108,15 +110,15 @@ Then:
 
 ```bash
 # GPU
-./build/inference_cli --device cuda --gpu-precision int16 \
+./build/inference --device cuda --gpu-precision int16 \
   --tokens 100 --temp 0.8 models/stories15M-q4_0.gguf "Once upon a time"
 
 # Let it pick (CUDA if the weights fit)
-./build/inference_cli --device auto --tokens 40 \
+./build/inference --device auto --tokens 40 \
   models/stories15M-q4_0.gguf "Once upon a time"
 
 # CPU
-./build/inference_cli --device cpu --tokens 20 \
+./build/inference --device cpu --tokens 20 \
   models/stories15M-q4_0.gguf "Hello"
 ```
 
@@ -126,10 +128,10 @@ For the real thing:
 curl -L -o models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf \
   https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf
 
-./build/inference_cli --device cuda --gpu-precision int16 --tokens 64 \
+./build/inference --device cuda --gpu-precision int16 --tokens 64 \
   models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf "The capital of France is"
 
-./build/inference_cli -i --device auto \
+./build/inference -i --device auto \
   models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf
 ```
 
@@ -188,7 +190,7 @@ full precision back and the model fits.
 ## Project layout
 
 ```
-inference-engine/
+inference.cpp/
 ├── include/                 # headers
 │   ├── core/tensor.hpp
 │   ├── gguf/gguf_parser.hpp, quantization.hpp

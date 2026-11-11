@@ -1,4 +1,4 @@
-# Inference Engine — Docs
+# inference.cpp docs
 
 I built this thing to answer a question I couldn't shake: what actually happens
 between typing a prompt and getting text back? Not the hand-wavy version. The
